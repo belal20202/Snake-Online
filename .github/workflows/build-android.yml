@@ -1,0 +1,69 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.1
+          use-dotnet: false
+          include-export-templates: true
+
+      - name: Check project
+        run: |
+          test -f project.godot
+          echo "Godot project found."
+
+      - name: Check export presets
+        run: |
+          if [ ! -f export_presets.cfg ]; then
+            echo "WARNING: export_presets.cfg is not configured yet."
+            echo "Android export will be enabled after the Android preset is created."
+          else
+            echo "export_presets.cfg found."
+          fi
+
+      - name: Create build directory
+        run: |
+          mkdir -p build
+
+      - name: Import Godot project
+        run: |
+          godot --headless --path . --editor --quit-after 5
+
+      - name: Build Android APK
+        if: hashFiles('export_presets.cfg') != ''
+        run: |
+          godot --headless \
+            --path . \
+            --export-release "Android" \
+            build/SnakeArabOnline.apk
+
+      - name: Upload APK
+        if: success() && hashFiles('build/SnakeArabOnline.apk') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: SnakeArabOnline-Android
+          path: build/SnakeArabOnline.apk
+          if-no-files-found: error
+
+      - name: Build completed
+        run: |
+          echo "Android build process completed."
