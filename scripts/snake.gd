@@ -1,55 +1,73 @@
 extends Node2D
 
-var player_name := "لاعب"
-var direction := Vector2.RIGHT
-var target_direction := Vector2.RIGHT
+var player_name: String = "لاعب"
 
-var speed := 260.0
-var boost_speed := 430.0
+var direction: Vector2 = Vector2.RIGHT
+var target_direction: Vector2 = Vector2.RIGHT
 
-var boosting := false
+var speed: float = 260.0
+var boost_speed: float = 430.0
+
+var boosting: bool = false
 
 var body: Array[Vector2] = []
-var body_count := 10
+var body_count: int = 10
 
-var segment_distance := 24.0
-var last_segment_position := Vector2.ZERO
+var segment_distance: float = 24.0
 
-var touch_start := Vector2.ZERO
-var touching := false
+var touch_start: Vector2 = Vector2.ZERO
+var touching: bool = false
 
 
 func _ready() -> void:
-	body_count = 10
-
-	for i in range(body_count):
-		body.append(
-			position - direction * segment_distance * i
-		)
+	if body.is_empty():
+		_initialize_body()
 
 	queue_redraw()
 
 
-func _process(delta: float) -> void:
+func setup(new_name: String) -> void:
+
+	player_name = new_name.strip_edges()
+
+	if player_name.is_empty():
+		player_name = "لاعب"
+
+	body.clear()
+	body_count = 10
+
+	_initialize_body()
+
+	queue_redraw()
+
+
+func _initialize_body() -> void:
+
+	for i in range(body_count):
+
+		body.append(
+			global_position -
+			direction * segment_distance * i
+		)
+
+
+func _physics_process(delta: float) -> void:
+
 	_read_keyboard()
 
-	if target_direction.length() > 0.0:
+	if target_direction.length_squared() > 0.01:
 		direction = target_direction.normalized()
 
 	boosting = Input.is_action_pressed("boost")
 
 	var current_speed := boost_speed if boosting else speed
 
-	position += direction * current_speed * delta
+	global_position += direction * current_speed * delta
 
 	_update_body()
 
 	queue_redraw()
 
-
-# =========================================================
-# INPUT
-# =========================================================
 
 func _read_keyboard() -> void:
 
@@ -71,7 +89,7 @@ func _set_direction(new_direction: Vector2) -> void:
 	if new_direction == -direction:
 		return
 
-	target_direction = new_direction
+	target_direction = new_direction.normalized()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -79,10 +97,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 
 		if event.pressed:
+
 			touch_start = event.position
 			touching = true
+
 		else:
+
 			if touching:
+
 				var swipe := event.position - touch_start
 
 				if swipe.length() > 30.0:
@@ -90,13 +112,17 @@ func _unhandled_input(event: InputEvent) -> void:
 
 				touching = false
 
+
 	elif event is InputEventScreenDrag:
 
 		if touching:
+
 			var swipe := event.position - touch_start
 
 			if swipe.length() > 40.0:
+
 				_process_swipe(swipe)
+
 				touch_start = event.position
 
 
@@ -117,10 +143,6 @@ func _process_swipe(swipe: Vector2) -> void:
 			_set_direction(Vector2.UP)
 
 
-# =========================================================
-# BODY
-# =========================================================
-
 func _update_body() -> void:
 
 	if body.is_empty():
@@ -136,6 +158,7 @@ func _update_body() -> void:
 		var distance := current.distance_to(previous)
 
 		if distance > segment_distance:
+
 			current = current.lerp(
 				previous,
 				min(1.0, (distance - segment_distance) / 10.0)
@@ -144,28 +167,27 @@ func _update_body() -> void:
 		body[i] = current
 
 
-# =========================================================
-# GROW
-# =========================================================
-
 func grow(amount: int = 1) -> void:
+
+	if amount <= 0:
+		return
 
 	for i in range(amount):
 
-		var tail := body.back()
-
-		body.append(tail)
+		if body.is_empty():
+			body.append(global_position)
+		else:
+			body.append(body.back())
 
 	body_count = body.size()
 
+	queue_redraw()
+
 
 func get_length() -> int:
+
 	return body.size()
 
-
-# =========================================================
-# DRAW
-# =========================================================
 
 func _draw() -> void:
 
@@ -177,20 +199,20 @@ func _draw() -> void:
 
 		var local_position := to_local(body[i])
 
-		var size := 20.0
+		var radius := 20.0
 
 		if i < 3:
-			size = 22.0
+			radius = 22.0
 
 		draw_circle(
 			local_position,
-			size,
+			radius,
 			Color("#22C55E")
 		)
 
 		draw_circle(
 			local_position,
-			size - 4.0,
+			radius - 4.0,
 			Color("#16A34A")
 		)
 
