@@ -7,9 +7,9 @@ const FOOD_RADIUS := 9.0
 var snake: Node2D
 var foods: Array[Node2D] = []
 
-var score := 0
-var game_over := false
-var paused := false
+var score: int = 0
+var game_over: bool = false
+var paused: bool = false
 
 var score_label: Label
 var length_label: Label
@@ -18,6 +18,7 @@ var game_over_panel: Panel
 
 
 func _ready() -> void:
+
 	randomize()
 
 	_create_background()
@@ -25,20 +26,26 @@ func _ready() -> void:
 	_create_local_player()
 	_create_ui()
 
+	queue_redraw()
+
 
 func _process(_delta: float) -> void:
+
 	if snake == null:
 		return
 
 	if not game_over and not paused:
+
 		_check_food_collision()
 		_check_map_collision()
 
 	_update_ui()
+
 	queue_redraw()
 
 
 func _create_background() -> void:
+
 	var background := ColorRect.new()
 
 	background.position = Vector2.ZERO
@@ -52,6 +59,7 @@ func _create_background() -> void:
 
 
 func _draw() -> void:
+
 	draw_rect(
 		Rect2(Vector2.ZERO, MAP_SIZE),
 		Color("#263449"),
@@ -64,6 +72,7 @@ func _draw() -> void:
 	var x := 0.0
 
 	while x <= MAP_SIZE.x:
+
 		draw_line(
 			Vector2(x, 0),
 			Vector2(x, MAP_SIZE.y),
@@ -76,6 +85,7 @@ func _draw() -> void:
 	var y := 0.0
 
 	while y <= MAP_SIZE.y:
+
 		draw_line(
 			Vector2(0, y),
 			Vector2(MAP_SIZE.x, y),
@@ -87,10 +97,14 @@ func _draw() -> void:
 
 
 func _create_local_player() -> void:
-	var snake_scene := load("res://scenes/snake.tscn")
+
+	var snake_scene := load(
+		"res://scenes/snake.tscn"
+	)
 
 	if snake_scene == null:
-		push_error("Snake scene not found")
+
+		push_error("لم يتم العثور على snake.tscn")
 		return
 
 	snake = snake_scene.instantiate()
@@ -100,15 +114,21 @@ func _create_local_player() -> void:
 	add_child(snake)
 
 	if snake.has_method("setup"):
-		snake.setup(Global.player_name)
+
+		snake.setup(
+			Global.player_name
+		)
 
 
 func _create_food() -> void:
+
 	for i in range(FOOD_COUNT):
+
 		_spawn_food()
 
 
 func _spawn_food() -> void:
+
 	var food := Node2D.new()
 
 	food.position = Vector2(
@@ -116,19 +136,29 @@ func _spawn_food() -> void:
 		randf_range(100.0, MAP_SIZE.y - 100.0)
 	)
 
-	food.set_meta("radius", FOOD_RADIUS)
-	food.set_meta("value", 10)
+	food.set_meta(
+		"radius",
+		FOOD_RADIUS
+	)
+
+	food.set_meta(
+		"value",
+		10
+	)
 
 	add_child(food)
+
 	foods.append(food)
 
 	var visual := FoodVisual.new()
+
 	visual.radius = FOOD_RADIUS
 
 	food.add_child(visual)
 
 
 func _check_food_collision() -> void:
+
 	if snake == null:
 		return
 
@@ -137,12 +167,20 @@ func _check_food_collision() -> void:
 	for food in foods.duplicate():
 
 		if not is_instance_valid(food):
+
 			foods.erase(food)
 			continue
 
-		if head_position.distance_to(food.global_position) < 30.0:
+		if head_position.distance_to(
+			food.global_position
+		) < 30.0:
 
-			var value := int(food.get_meta("value", 10))
+			var value := int(
+				food.get_meta(
+					"value",
+					10
+				)
+			)
 
 			score += value
 
@@ -150,12 +188,14 @@ func _check_food_collision() -> void:
 				snake.grow(1)
 
 			foods.erase(food)
+
 			food.queue_free()
 
 			_spawn_food()
 
 
 func _check_map_collision() -> void:
+
 	if snake == null:
 		return
 
@@ -167,10 +207,12 @@ func _check_map_collision() -> void:
 		or pos.x > MAP_SIZE.x - 30.0
 		or pos.y > MAP_SIZE.y - 30.0
 	):
+
 		_game_over()
 
 
 func _create_ui() -> void:
+
 	var canvas := CanvasLayer.new()
 
 	canvas.name = "GameUI"
@@ -215,7 +257,9 @@ func _create_ui() -> void:
 
 	pause_button.text = "إيقاف"
 
-	pause_button.pressed.connect(_toggle_pause)
+	pause_button.pressed.connect(
+		_toggle_pause
+	)
 
 	canvas.add_child(pause_button)
 
@@ -226,42 +270,64 @@ func _create_ui() -> void:
 
 	exit_button.text = "خروج"
 
-	exit_button.pressed.connect(_back_to_lobby)
+	exit_button.pressed.connect(
+		_back_to_lobby
+	)
 
 	canvas.add_child(exit_button)
 
+	_update_ui()
+
 
 func _update_ui() -> void:
+
 	if score_label:
+
 		score_label.text = "النقاط: %d" % score
 
 	if length_label and snake:
+
 		var length := 10
 
 		if snake.has_method("get_length"):
+
 			length = snake.get_length()
 
 		length_label.text = "الطول: %d" % length
 
 
 func _toggle_pause() -> void:
+
 	paused = not paused
 
 	if pause_button:
-		pause_button.text = "متابعة" if paused else "إيقاف"
+
+		if paused:
+			pause_button.text = "متابعة"
+		else:
+			pause_button.text = "إيقاف"
 
 
 func _game_over() -> void:
+
 	if game_over:
 		return
 
 	game_over = true
 
+	Global.last_score = score
+
+	if snake.has_method("get_length"):
+		Global.last_length = snake.get_length()
+
 	_show_game_over()
 
 
 func _show_game_over() -> void:
-	var canvas := get_node_or_null("GameUI")
+
+	var canvas := get_node_or_null(
+		"GameUI"
+	)
 
 	if canvas == null:
 		return
@@ -271,7 +337,9 @@ func _show_game_over() -> void:
 	game_over_panel.position = Vector2(390, 200)
 	game_over_panel.size = Vector2(500, 300)
 
-	canvas.add_child(game_over_panel)
+	canvas.add_child(
+		game_over_panel
+	)
 
 	var title := Label.new()
 
@@ -279,6 +347,7 @@ func _show_game_over() -> void:
 	title.size = Vector2(440, 60)
 
 	title.text = "انتهت اللعبة"
+
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	title.add_theme_font_size_override(
@@ -294,6 +363,7 @@ func _show_game_over() -> void:
 	result.size = Vector2(440, 50)
 
 	result.text = "النقاط: %d" % score
+
 	result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
 	result.add_theme_font_size_override(
@@ -311,18 +381,20 @@ func _show_game_over() -> void:
 	restart.text = "العب مرة أخرى"
 
 	restart.pressed.connect(
-		func():
-			get_tree().reload_current_scene()
+		_on_restart_pressed
 	)
 
 	game_over_panel.add_child(restart)
 
 
-func _back_to_lobby() -> void:
-	var network := get_node_or_null("/root/Network")
+func _on_restart_pressed() -> void:
 
-	if network:
-		network.close_connection()
+	get_tree().reload_current_scene()
+
+
+func _back_to_lobby() -> void:
+
+	Network.close_connection()
 
 	get_tree().change_scene_to_file(
 		"res://scenes/lobby.tscn"
@@ -331,7 +403,13 @@ func _back_to_lobby() -> void:
 
 class FoodVisual extends Node2D:
 
-	var radius := 9.0
+	var radius: float = 9.0
+
+
+	func _ready() -> void:
+
+		queue_redraw()
+
 
 	func _draw() -> void:
 
