@@ -1,11 +1,5 @@
 extends Node2D
 
-# =========================================================
-# SNAKE ARAB ONLINE
-# REMOTE SNAKE
-# STEP 6.6.5
-# =========================================================
-
 var peer_id: int = 0
 var player_name: String = "لاعب"
 
@@ -22,7 +16,8 @@ var is_alive: bool = true
 
 var interpolation_speed: float = 12.0
 
-var body: Array[Vector2] = []
+var body: Array = []
+var target_body: Array = []
 
 var segment_distance: float = 24.0
 
@@ -35,10 +30,6 @@ var display_color: Color = Color(
 
 var name_label: Label
 
-
-# =========================================================
-# SETUP
-# =========================================================
 
 func setup(
 	id: int,
@@ -57,17 +48,11 @@ func setup(
 	current_length = 10
 	target_length = 10
 
-	is_alive = true
-
 	_create_name_label()
 	_rebuild_body()
 
 	queue_redraw()
 
-
-# =========================================================
-# READY
-# =========================================================
 
 func _ready() -> void:
 
@@ -76,73 +61,33 @@ func _ready() -> void:
 	queue_redraw()
 
 
-# =========================================================
-# PROCESS
-# =========================================================
-
 func _process(delta: float) -> void:
 
 	if not is_alive:
 		return
 
+	var interpolation := min(
+		1.0,
+		interpolation_speed * delta
+	)
+
 	global_position = global_position.lerp(
 		target_position,
-		min(
-			1.0,
-			interpolation_speed * delta
-		)
+		interpolation
 	)
 
 	direction = direction.lerp(
 		target_direction,
-		min(
-			1.0,
-			10.0 * delta
-		)
+		min(1.0, 10.0 * delta)
 	)
 
 	if direction.length() > 0.01:
 		direction = direction.normalized()
 
-	current_position = global_position
-
-	current_length = int(
-		lerp(
-			float(current_length),
-			float(target_length),
-			min(1.0, 8.0 * delta)
-		)
-	)
-
-	_rebuild_body()
+	_interpolate_body(delta)
 
 	queue_redraw()
 
-
-# =========================================================
-# SET TARGET POSITION
-# =========================================================
-# هذه الدالة تستخدم عند دخول لاعب جديد
-# أو عند إعطاء اللاعب Spawn من السيرفر.
-
-func set_target_position(
-	new_position: Vector2
-) -> void:
-
-	target_position = new_position
-	current_position = new_position
-
-	global_position = new_position
-
-	if body.is_empty():
-		_rebuild_body()
-
-	queue_redraw()
-
-
-# =========================================================
-# NAME LABEL
-# =========================================================
 
 func _create_name_label() -> void:
 
@@ -152,26 +97,13 @@ func _create_name_label() -> void:
 	name_label = Label.new()
 
 	name_label.name = "PlayerName"
-
 	name_label.text = player_name
 
-	name_label.position = Vector2(
-		-100,
-		-65
-	)
+	name_label.position = Vector2(-100, -65)
+	name_label.size = Vector2(200, 40)
 
-	name_label.size = Vector2(
-		200,
-		40
-	)
-
-	name_label.horizontal_alignment = (
-		HORIZONTAL_ALIGNMENT_CENTER
-	)
-
-	name_label.vertical_alignment = (
-		VERTICAL_ALIGNMENT_CENTER
-	)
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 	name_label.add_theme_font_size_override(
 		"font_size",
@@ -185,12 +117,7 @@ func _create_name_label() -> void:
 
 	name_label.add_theme_color_override(
 		"font_shadow_color",
-		Color(
-			0,
-			0,
-			0,
-			0.8
-		)
+		Color(0, 0, 0, 0.8)
 	)
 
 	name_label.add_theme_constant_override(
@@ -206,15 +133,12 @@ func _create_name_label() -> void:
 	add_child(name_label)
 
 
-# =========================================================
-# UPDATE PLAYER
-# =========================================================
-
 func update_state(
 	new_position: Vector2,
 	new_direction: Vector2,
 	new_length: int,
-	alive: bool
+	alive: bool,
+	new_body: Array = []
 ) -> void:
 
 	target_position = new_position
@@ -227,6 +151,14 @@ func update_state(
 		new_length
 	)
 
+	if new_body.size() > 0:
+
+		target_body.clear()
+
+		for point in new_body:
+			if point is Vector2:
+				target_body.append(point)
+
 	if alive != is_alive:
 
 		if alive:
@@ -237,13 +169,7 @@ func update_state(
 	is_alive = alive
 
 
-# =========================================================
-# UPDATE NAME
-# =========================================================
-
-func set_player_name(
-	new_name: String
-) -> void:
+func set_player_name(new_name: String) -> void:
 
 	player_name = new_name
 
@@ -251,13 +177,7 @@ func set_player_name(
 		name_label.text = player_name
 
 
-# =========================================================
-# UPDATE LENGTH
-# =========================================================
-
-func set_length(
-	new_length: int
-) -> void:
+func set_length(new_length: int) -> void:
 
 	target_length = max(
 		5,
@@ -265,9 +185,45 @@ func set_length(
 	)
 
 
-# =========================================================
-# REBUILD BODY
-# =========================================================
+func set_target_position(new_position: Vector2) -> void:
+
+	target_position = new_position
+
+
+func _interpolate_body(delta: float) -> void:
+
+	if target_body.is_empty():
+		_rebuild_body()
+		return
+
+	while body.size() < target_body.size():
+
+		body.append(
+			target_body[body.size()]
+		)
+
+	while body.size() > target_body.size():
+		body.pop_back()
+
+	var amount := min(
+		1.0,
+		15.0 * delta
+	)
+
+	for i in range(body.size()):
+
+		if i >= target_body.size():
+			break
+
+		body[i] = body[i].lerp(
+			target_body[i],
+			amount
+		)
+
+	if not body.is_empty():
+
+		body[0] = global_position
+
 
 func _rebuild_body() -> void:
 
@@ -286,16 +242,17 @@ func _rebuild_body() -> void:
 
 		else:
 
-			var previous := body[
+			var previous: Vector2 = body[
 				body.size() - 1
 			]
 
 			body.append(
-				previous - direction * segment_distance
+				previous -
+				direction *
+				segment_distance
 			)
 
 	while body.size() > required_count:
-
 		body.pop_back()
 
 	if body.is_empty():
@@ -305,8 +262,10 @@ func _rebuild_body() -> void:
 
 	for i in range(1, body.size()):
 
-		var desired := body[i - 1] - (
-			direction * segment_distance
+		var desired := (
+			body[i - 1] -
+			direction *
+			segment_distance
 		)
 
 		body[i] = body[i].lerp(
@@ -314,10 +273,6 @@ func _rebuild_body() -> void:
 			0.35
 		)
 
-
-# =========================================================
-# DRAW
-# =========================================================
 
 func _draw() -> void:
 
@@ -327,17 +282,16 @@ func _draw() -> void:
 	if body.is_empty():
 		return
 
-	# -----------------------------
-	# BODY
-	# -----------------------------
-
 	for i in range(
 		body.size() - 1,
 		-1,
 		-1
 	):
 
-		var point := body[i] - global_position
+		var point: Vector2 = (
+			body[i] -
+			global_position
+		)
 
 		var progress := float(i) / max(
 			1,
@@ -353,12 +307,7 @@ func _draw() -> void:
 		draw_circle(
 			point,
 			radius + 3.0,
-			Color(
-				0,
-				0,
-				0,
-				0.18
-			)
+			Color(0, 0, 0, 0.18)
 		)
 
 		draw_circle(
@@ -367,38 +316,27 @@ func _draw() -> void:
 			display_color
 		)
 
-		# Body highlight
 		draw_circle(
-			point + Vector2(
+			point +
+			Vector2(
 				-radius * 0.25,
 				-radius * 0.25
 			),
 			radius * 0.25,
-			Color(
-				1,
-				1,
-				1,
-				0.20
-			)
+			Color(1, 1, 1, 0.20)
 		)
 
-	# -----------------------------
-	# HEAD
-	# -----------------------------
-
-	var head := body[0] - global_position
+	var head: Vector2 = (
+		body[0] -
+		global_position
+	)
 
 	var head_radius := 22.0
 
 	draw_circle(
 		head,
 		head_radius + 4.0,
-		Color(
-			0,
-			0,
-			0,
-			0.20
-		)
+		Color(0, 0, 0, 0.20)
 	)
 
 	draw_circle(
@@ -406,10 +344,6 @@ func _draw() -> void:
 		head_radius,
 		display_color
 	)
-
-	# -----------------------------
-	# EYES
-	# -----------------------------
 
 	var forward := direction.normalized()
 
@@ -423,15 +357,15 @@ func _draw() -> void:
 
 	var eye_distance := 8.0
 
-	var eye_left := head + (
-		forward * 9.0
-	) + (
+	var eye_left := (
+		head +
+		forward * 9.0 +
 		side * eye_distance
 	)
 
-	var eye_right := head + (
-		forward * 9.0
-	) - (
+	var eye_right := (
+		head +
+		forward * 9.0 -
 		side * eye_distance
 	)
 
@@ -448,40 +382,25 @@ func _draw() -> void:
 	)
 
 	draw_circle(
-		eye_left + forward * 2.0,
+		eye_left +
+		forward * 2.0,
 		2.5,
-		Color(
-			0.02,
-			0.02,
-			0.02
-		)
+		Color(0.02, 0.02, 0.02)
 	)
 
 	draw_circle(
-		eye_right + forward * 2.0,
+		eye_right +
+		forward * 2.0,
 		2.5,
-		Color(
-			0.02,
-			0.02,
-			0.02
-		)
+		Color(0.02, 0.02, 0.02)
 	)
 
-
-# =========================================================
-# DEATH
-# =========================================================
 
 func die() -> void:
 
 	is_alive = false
-
 	visible = false
 
-
-# =========================================================
-# RESPAWN
-# =========================================================
 
 func respawn(
 	new_position: Vector2
@@ -491,41 +410,27 @@ func respawn(
 	visible = true
 
 	global_position = new_position
-	current_position = new_position
 	target_position = new_position
 
-	direction = Vector2.RIGHT
-	target_direction = Vector2.RIGHT
-
-	current_length = 10
-	target_length = 10
-
 	body.clear()
+	target_body.clear()
 
 	_rebuild_body()
 
 	queue_redraw()
 
 
-# =========================================================
-# GETTERS
-# =========================================================
-
 func get_peer_id() -> int:
-
 	return peer_id
 
 
 func get_player_name() -> String:
-
 	return player_name
 
 
 func get_length() -> int:
-
 	return target_length
 
 
 func get_is_alive() -> bool:
-
 	return is_alive
