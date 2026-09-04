@@ -5,11 +5,11 @@ signal connection_failed
 signal player_connected(peer_id: int)
 signal player_disconnected(peer_id: int)
 
-const PORT := 7777
-const MAX_PLAYERS := 16
+const PORT: int = 7777
+const MAX_PLAYERS: int = 16
 
-var peer: ENetMultiplayerPeer
-var is_host := false
+var peer: ENetMultiplayerPeer = null
+var is_host: bool = false
 
 
 func _ready() -> void:
@@ -17,6 +17,7 @@ func _ready() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
+	multiplayer.server_disconnected.connect(_on_server_disconnected)
 
 
 func host_game() -> bool:
@@ -27,6 +28,7 @@ func host_game() -> bool:
 	var error := peer.create_server(PORT, MAX_PLAYERS)
 
 	if error != OK:
+		push_error("فشل إنشاء الخادم: %s" % error)
 		return false
 
 	multiplayer.multiplayer_peer = peer
@@ -48,6 +50,7 @@ func join_game(ip_address: String) -> bool:
 	var error := peer.create_client(clean_ip, PORT)
 
 	if error != OK:
+		push_error("فشل الاتصال: %s" % error)
 		return false
 
 	multiplayer.multiplayer_peer = peer
@@ -57,7 +60,7 @@ func join_game(ip_address: String) -> bool:
 
 
 func close_connection() -> void:
-	if multiplayer.multiplayer_peer:
+	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 
 	multiplayer.multiplayer_peer = null
@@ -85,4 +88,8 @@ func _on_connected_to_server() -> void:
 
 
 func _on_connection_failed() -> void:
+	connection_failed.emit()
+
+
+func _on_server_disconnected() -> void:
 	connection_failed.emit()
