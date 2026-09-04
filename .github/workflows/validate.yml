@@ -8,10 +8,6 @@ on:
       - develop
 
   pull_request:
-    branches:
-      - main
-      - master
-      - develop
 
   workflow_dispatch:
 
@@ -19,13 +15,17 @@ permissions:
   contents: read
 
 jobs:
+
   validate:
+
     name: Validate Godot Project
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install Godot
         uses: chickensoft-games/setup-godot@v2
@@ -34,22 +34,69 @@ jobs:
           use-dotnet: false
           include-export-templates: true
 
+      - name: Find project.godot
+        shell: bash
+        run: |
+
+          set -e
+
+          PROJECT_FILE="$(find . -type f -name project.godot -not -path './.git/*' | head -n 1)"
+
+          if [ -z "$PROJECT_FILE" ]; then
+
+            echo "::error::project.godot غير موجود"
+
+            exit 1
+
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_FILE")"
+
+          PROJECT_DIR="${PROJECT_DIR#./}"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="."
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project directory: $PROJECT_DIR"
+
       - name: Check project files
+        shell: bash
         run: |
-          test -f project.godot
-          test -d scenes
-          test -d scripts
-          test -d assets
-          echo "Project structure OK"
 
-      - name: Validate project
-        run: |
-          godot --headless --path . --editor --quit
+          set -e
 
-      - name: Import project
+          test -f "$PROJECT_DIR/project.godot"
+
+          test -d "$PROJECT_DIR/scenes"
+
+          test -d "$PROJECT_DIR/scripts"
+
+          test -f "$PROJECT_DIR/scenes/main_menu.tscn"
+
+          test -f "$PROJECT_DIR/scenes/player_name.tscn"
+
+          test -f "$PROJECT_DIR/scenes/lobby.tscn"
+
+          test -f "$PROJECT_DIR/scenes/game.tscn"
+
+          test -f "$PROJECT_DIR/scenes/snake.tscn"
+
+          echo "All required files found."
+
+      - name: Validate Godot project
+        shell: bash
         run: |
-          godot --headless --path . --editor --quit-after 5
+
+          set -e
+
+          godot \
+            --headless \
+            --path "$PROJECT_DIR" \
+            --editor \
+            --quit
 
       - name: Validation completed
-        run: |
-          echo "Snake Arab Online validation completed successfully."
+        run: echo "Snake Arab Online validation completed successfully."
