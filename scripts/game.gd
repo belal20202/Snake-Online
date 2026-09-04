@@ -2,15 +2,18 @@ extends Node2D
 
 # =========================================================
 # 🐍 SNAKE ARAB ONLINE
-# الخطوة 6.2
-# نظام الطعام + النقاط + زيادة طول الثعبان
+# الخطوة 6.3
+# النقاط + العملات + الخبرة + حفظ البيانات
 # =========================================================
 
 # =========================================================
 # إعدادات الخريطة
 # =========================================================
 
-const MAP_SIZE := Vector2(4000.0, 4000.0)
+const MAP_SIZE := Vector2(
+	4000.0,
+	4000.0
+)
 
 const MAP_MARGIN := 120.0
 
@@ -24,7 +27,11 @@ const FOOD_RADIUS := 10.0
 
 const FOOD_COLLECT_DISTANCE := 45.0
 
-const FOOD_VALUE := 10
+const FOOD_SCORE := 10
+
+const FOOD_COINS := 1
+
+const FOOD_XP := 5
 
 # =========================================================
 # اللاعب
@@ -39,12 +46,14 @@ var snake: Node2D = null
 var foods: Array[Node2D] = []
 
 # =========================================================
-# النقاط
+# إحصائيات الجولة
 # =========================================================
 
 var score: int = 0
 
-var coins: int = 0
+var round_coins: int = 0
+
+var round_xp: int = 0
 
 # =========================================================
 # حالة اللعبة
@@ -64,9 +73,14 @@ var length_label: Label = null
 
 var coins_label: Label = null
 
+var wallet_label: Label = null
+
+var level_label: Label = null
+
 var pause_button: Button = null
 
 var game_over_panel: Panel = null
+
 
 # =========================================================
 # البداية
@@ -110,7 +124,7 @@ func _process(_delta: float) -> void:
 
 
 # =========================================================
-# إنشاء خلفية الخريطة
+# خلفية الخريطة
 # =========================================================
 
 func _create_background() -> void:
@@ -129,7 +143,10 @@ func _create_background() -> void:
 
 	add_child(background)
 
-	move_child(background, 0)
+	move_child(
+		background,
+		0
+	)
 
 
 # =========================================================
@@ -137,8 +154,6 @@ func _create_background() -> void:
 # =========================================================
 
 func _draw() -> void:
-
-	# حدود الخريطة
 
 	draw_rect(
 		Rect2(
@@ -150,8 +165,6 @@ func _draw() -> void:
 		12.0
 	)
 
-	# شبكة الخريطة
-
 	var grid_size := 100.0
 
 	var x := 0.0
@@ -161,7 +174,12 @@ func _draw() -> void:
 		draw_line(
 			Vector2(x, 0),
 			Vector2(x, MAP_SIZE.y),
-			Color(0.12, 0.16, 0.22, 0.35),
+			Color(
+				0.12,
+				0.16,
+				0.22,
+				0.35
+			),
 			2.0
 		)
 
@@ -175,7 +193,12 @@ func _draw() -> void:
 		draw_line(
 			Vector2(0, y),
 			Vector2(MAP_SIZE.x, y),
-			Color(0.12, 0.16, 0.22, 0.35),
+			Color(
+				0.12,
+				0.16,
+				0.22,
+				0.35
+			),
 			2.0
 		)
 
@@ -208,17 +231,17 @@ func _create_local_player() -> void:
 	add_child(snake)
 
 
-	# إرسال اسم اللاعب للثعبان
-
 	if snake.has_method("setup"):
 
 		var player_name := "لاعب"
 
-		if "player_name" in Global:
+		if Global.player_name.strip_edges() != "":
 
 			player_name = Global.player_name
 
-		snake.setup(player_name)
+		snake.setup(
+			player_name
+		)
 
 
 # =========================================================
@@ -233,7 +256,7 @@ func _create_food() -> void:
 
 
 # =========================================================
-# إنشاء قطعة طعام واحدة
+# إنشاء طعام
 # =========================================================
 
 func _spawn_food() -> void:
@@ -253,36 +276,36 @@ func _spawn_food() -> void:
 		)
 	)
 
-
-	# البيانات الخاصة بالطعام
-
-	food.set_meta(
-		"radius",
-		FOOD_RADIUS
-	)
-
 	food.set_meta(
 		"value",
-		FOOD_VALUE
+		FOOD_SCORE
 	)
 
+	food.set_meta(
+		"coins",
+		FOOD_COINS
+	)
+
+	food.set_meta(
+		"xp",
+		FOOD_XP
+	)
 
 	add_child(food)
 
 	foods.append(food)
 
-
-	# الشكل المرئي للطعام
-
 	var visual := FoodVisual.new()
 
 	visual.radius = FOOD_RADIUS
 
-	food.add_child(visual)
+	food.add_child(
+		visual
+	)
 
 
 # =========================================================
-# فحص اصطدام الرأس بالطعام
+# فحص الطعام
 # =========================================================
 
 func _check_food_collision() -> void:
@@ -290,12 +313,7 @@ func _check_food_collision() -> void:
 	if snake == null:
 		return
 
-
 	var head_position := snake.global_position
-
-
-	# نستخدم نسخة من القائمة
-	# حتى نستطيع حذف الطعام أثناء الحلقة
 
 	for food in foods.duplicate():
 
@@ -315,44 +333,64 @@ func _check_food_collision() -> void:
 
 		if distance <= FOOD_COLLECT_DISTANCE:
 
-			_collect_food(food)
+			_collect_food(
+				food
+			)
 
 
 # =========================================================
 # جمع الطعام
 # =========================================================
 
-func _collect_food(food: Node2D) -> void:
+func _collect_food(
+	food: Node2D
+) -> void:
 
 	if not is_instance_valid(food):
 		return
 
 
 	# =====================================================
-	# حساب قيمة الطعام
+	# قراءة قيمة الطعام
 	# =====================================================
 
-	var value := FOOD_VALUE
+	var score_value := FOOD_SCORE
+
+	var coin_value := FOOD_COINS
+
+	var xp_value := FOOD_XP
+
 
 	if food.has_meta("value"):
 
-		value = int(
+		score_value = int(
 			food.get_meta("value")
 		)
 
 
+	if food.has_meta("coins"):
+
+		coin_value = int(
+			food.get_meta("coins")
+		)
+
+
+	if food.has_meta("xp"):
+
+		xp_value = int(
+			food.get_meta("xp")
+		)
+
+
 	# =====================================================
-	# زيادة النقاط
+	# تحديث إحصائيات الجولة
 	# =====================================================
 
-	score += value
+	score += score_value
 
+	round_coins += coin_value
 
-	# =====================================================
-	# إضافة عملة داخل اللعبة
-	# =====================================================
-
-	coins += 1
+	round_xp += xp_value
 
 
 	# =====================================================
@@ -365,7 +403,20 @@ func _collect_food(food: Node2D) -> void:
 
 
 	# =====================================================
-	# إزالة الطعام القديم
+	# حفظ العملات والخبرة مباشرة
+	# =====================================================
+
+	Global.add_coins(
+		coin_value
+	)
+
+	Global.add_experience(
+		xp_value
+	)
+
+
+	# =====================================================
+	# إزالة الطعام
 	# =====================================================
 
 	foods.erase(food)
@@ -380,10 +431,6 @@ func _collect_food(food: Node2D) -> void:
 	_spawn_food()
 
 
-	# =====================================================
-	# تحديث الواجهة فورًا
-	# =====================================================
-
 	_update_ui()
 
 
@@ -396,9 +443,7 @@ func _check_map_collision() -> void:
 	if snake == null:
 		return
 
-
 	var pos := snake.global_position
-
 
 	if (
 		pos.x < 30.0
@@ -440,11 +485,13 @@ func _create_ui() -> void:
 	)
 
 	top_bar.size = Vector2(
-		390,
-		155
+		410,
+		220
 	)
 
-	canvas.add_child(top_bar)
+	canvas.add_child(
+		top_bar
+	)
 
 
 	# =====================================================
@@ -453,26 +500,26 @@ func _create_ui() -> void:
 
 	score_label = Label.new()
 
-	score_label.name = "ScoreLabel"
-
 	score_label.position = Vector2(
 		20,
-		12
+		10
 	)
 
 	score_label.size = Vector2(
-		350,
-		40
+		370,
+		38
 	)
 
 	score_label.text = "النقاط: 0"
 
 	score_label.add_theme_font_size_override(
 		"font_size",
-		28
+		27
 	)
 
-	top_bar.add_child(score_label)
+	top_bar.add_child(
+		score_label
+	)
 
 
 	# =====================================================
@@ -481,15 +528,13 @@ func _create_ui() -> void:
 
 	length_label = Label.new()
 
-	length_label.name = "LengthLabel"
-
 	length_label.position = Vector2(
 		20,
-		58
+		52
 	)
 
 	length_label.size = Vector2(
-		350,
+		370,
 		35
 	)
 
@@ -497,38 +542,96 @@ func _create_ui() -> void:
 
 	length_label.add_theme_font_size_override(
 		"font_size",
-		22
+		21
 	)
 
-	top_bar.add_child(length_label)
+	top_bar.add_child(
+		length_label
+	)
 
 
 	# =====================================================
-	# العملات
+	# عملات الجولة
 	# =====================================================
 
 	coins_label = Label.new()
 
-	coins_label.name = "CoinsLabel"
-
 	coins_label.position = Vector2(
 		20,
-		100
+		90
 	)
 
 	coins_label.size = Vector2(
-		350,
+		370,
 		35
 	)
 
-	coins_label.text = "العملات: 0"
+	coins_label.text = "🪙 الجولة: 0"
 
 	coins_label.add_theme_font_size_override(
 		"font_size",
-		22
+		21
 	)
 
-	top_bar.add_child(coins_label)
+	top_bar.add_child(
+		coins_label
+	)
+
+
+	# =====================================================
+	# المحفظة
+	# =====================================================
+
+	wallet_label = Label.new()
+
+	wallet_label.position = Vector2(
+		20,
+		128
+	)
+
+	wallet_label.size = Vector2(
+		370,
+		35
+	)
+
+	wallet_label.text = "💰 الرصيد: 0"
+
+	wallet_label.add_theme_font_size_override(
+		"font_size",
+		21
+	)
+
+	top_bar.add_child(
+		wallet_label
+	)
+
+
+	# =====================================================
+	# المستوى
+	# =====================================================
+
+	level_label = Label.new()
+
+	level_label.position = Vector2(
+		20,
+		166
+	)
+
+	level_label.size = Vector2(
+		370,
+		35
+	)
+
+	level_label.text = "⭐ المستوى: 1"
+
+	level_label.add_theme_font_size_override(
+		"font_size",
+		21
+	)
+
+	top_bar.add_child(
+		level_label
+	)
 
 
 	# =====================================================
@@ -540,12 +643,12 @@ func _create_ui() -> void:
 	pause_button.name = "PauseButton"
 
 	pause_button.position = Vector2(
-		1110,
+		1100,
 		25
 	)
 
 	pause_button.size = Vector2(
-		140,
+		150,
 		60
 	)
 
@@ -560,7 +663,9 @@ func _create_ui() -> void:
 		_toggle_pause
 	)
 
-	canvas.add_child(pause_button)
+	canvas.add_child(
+		pause_button
+	)
 
 
 	# =====================================================
@@ -572,12 +677,12 @@ func _create_ui() -> void:
 	exit_button.name = "ExitButton"
 
 	exit_button.position = Vector2(
-		1110,
+		1100,
 		95
 	)
 
 	exit_button.size = Vector2(
-		140,
+		150,
 		55
 	)
 
@@ -592,7 +697,9 @@ func _create_ui() -> void:
 		_back_to_lobby
 	)
 
-	canvas.add_child(exit_button)
+	canvas.add_child(
+		exit_button
+	)
 
 
 # =========================================================
@@ -613,13 +720,11 @@ func _update_ui() -> void:
 
 		var length := 10
 
-
 		if snake.has_method(
 			"get_length"
 		):
 
 			length = snake.get_length()
-
 
 		length_label.text = (
 			"الطول: %d"
@@ -630,8 +735,24 @@ func _update_ui() -> void:
 	if coins_label:
 
 		coins_label.text = (
-			"العملات: %d"
-			% coins
+			"🪙 الجولة: %d"
+			% round_coins
+		)
+
+
+	if wallet_label:
+
+		wallet_label.text = (
+			"💰 الرصيد: %d"
+			% Global.coins
+		)
+
+
+	if level_label:
+
+		level_label.text = (
+			"⭐ المستوى: %d"
+			% Global.level
 		)
 
 
@@ -677,11 +798,22 @@ func _game_over() -> void:
 			snake.stop_movement()
 
 
+	# حفظ إحصائيات الجولة
+
+	Global.last_score = score
+
+	Global.last_coins = round_coins
+
+	Global.last_length = _get_snake_length()
+
+	Global.save_data()
+
+
 	_show_game_over()
 
 
 # =========================================================
-# شاشة انتهاء اللعبة
+# شاشة النهاية
 # =========================================================
 
 func _show_game_over() -> void:
@@ -690,13 +822,11 @@ func _show_game_over() -> void:
 		"GameUI"
 	)
 
-
 	if canvas == null:
 		return
 
 
 	if game_over_panel:
-
 		return
 
 
@@ -706,12 +836,12 @@ func _show_game_over() -> void:
 
 	game_over_panel.position = Vector2(
 		390,
-		200
+		180
 	)
 
 	game_over_panel.size = Vector2(
 		500,
-		320
+		370
 	)
 
 	canvas.add_child(
@@ -752,27 +882,31 @@ func _show_game_over() -> void:
 
 
 	# =====================================================
-	# النتيجة
+	# النتائج
 	# =====================================================
 
 	var result := Label.new()
 
 	result.position = Vector2(
 		30,
-		100
+		95
 	)
 
 	result.size = Vector2(
 		440,
-		80
+		120
 	)
 
 	result.text = (
-		"النقاط: %d\nالطول: %d\nالعملات: %d"
+		"النقاط: %d\n"
+		+ "الطول: %d\n"
+		+ "عملات الجولة: %d\n"
+		+ "رصيدك: %d"
 		% [
 			score,
 			_get_snake_length(),
-			coins
+			round_coins,
+			Global.coins
 		]
 	)
 
@@ -782,7 +916,7 @@ func _show_game_over() -> void:
 
 	result.add_theme_font_size_override(
 		"font_size",
-		23
+		22
 	)
 
 	game_over_panel.add_child(
@@ -798,7 +932,7 @@ func _show_game_over() -> void:
 
 	restart.position = Vector2(
 		80,
-		220
+		245
 	)
 
 	restart.size = Vector2(
@@ -824,7 +958,7 @@ func _show_game_over() -> void:
 
 
 # =========================================================
-# الحصول على طول الثعبان
+# طول الثعبان
 # =========================================================
 
 func _get_snake_length() -> int:
@@ -852,7 +986,6 @@ func _back_to_lobby() -> void:
 	var network := get_node_or_null(
 		"/root/Network"
 	)
-
 
 	if network:
 
@@ -889,26 +1022,39 @@ class FoodVisual extends Node2D:
 
 	func _draw() -> void:
 
-		# هالة بسيطة
+		# الهالة
 
 		draw_circle(
 			Vector2.ZERO,
-			radius + 5.0,
+			radius + 6.0,
 			Color(
-				0.98,
-				0.80,
-				0.08,
-				0.12
+				1.0,
+				0.82,
+				0.05,
+				0.14
 			)
 		)
 
 
-		# الطعام
+		# جسم العملة/الطعام
 
 		draw_circle(
 			Vector2.ZERO,
 			radius,
 			Color("#FACC15")
+		)
+
+
+		# الحلقة الداخلية
+
+		draw_arc(
+			Vector2.ZERO,
+			radius - 2.0,
+			0.0,
+			TAU,
+			24,
+			Color("#EAB308"),
+			2.0
 		)
 
 
@@ -919,23 +1065,6 @@ class FoodVisual extends Node2D:
 				-3.0,
 				-3.0
 			),
-			radius * 0.30,
+			radius * 0.28,
 			Color.WHITE
-		)
-
-
-		# نقطة صغيرة
-
-		draw_circle(
-			Vector2(
-				3.0,
-				3.0
-			),
-			radius * 0.12,
-			Color(
-				0.9,
-				0.65,
-				0.0,
-				0.8
-			)
 		)
