@@ -2,8 +2,8 @@ extends Node
 
 # =========================================================
 # SNAKE ARAB ONLINE
-# MULTIPLAYER NETWORK SYSTEM
-# STEP 6.6.1
+# NETWORK MANAGER
+# STEP 6.6.4
 # =========================================================
 
 signal connected_to_server
@@ -15,6 +15,10 @@ signal server_started
 const DEFAULT_PORT := 7777
 const MAX_PLAYERS := 20
 
+const MAP_SIZE := Vector2(4000.0, 4000.0)
+const SPAWN_MARGIN := 350.0
+const MIN_SPAWN_DISTANCE := 500.0
+
 var peer: ENetMultiplayerPeer
 
 var is_server := false
@@ -24,6 +28,9 @@ var server_ip := "127.0.0.1"
 var server_port := DEFAULT_PORT
 
 var connected_players: Dictionary = {}
+var player_spawns: Dictionary = {}
+
+var rng := RandomNumberGenerator.new()
 
 
 # =========================================================
@@ -31,21 +38,39 @@ var connected_players: Dictionary = {}
 # =========================================================
 
 func _ready() -> void:
-	multiplayer.peer_connected.connect(_on_peer_connected)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-	multiplayer.connected_to_server.connect(_on_connected_to_server)
-	multiplayer.connection_failed.connect(_on_connection_failed)
-	multiplayer.server_disconnected.connect(_on_server_disconnected)
+
+	rng.randomize()
+
+	multiplayer.peer_connected.connect(
+		_on_peer_connected
+	)
+
+	multiplayer.peer_disconnected.connect(
+		_on_peer_disconnected
+	)
+
+	multiplayer.connected_to_server.connect(
+		_on_connected_to_server
+	)
+
+	multiplayer.connection_failed.connect(
+		_on_connection_failed
+	)
+
+	multiplayer.server_disconnected.connect(
+		_on_server_disconnected
+	)
 
 
 # =========================================================
 # CREATE SERVER
 # =========================================================
 
-func create_server(port: int = DEFAULT_PORT) -> bool:
+func create_server(
+	port: int = DEFAULT_PORT
+) -> bool:
 
-	if is_connected:
-		disconnect_from_network()
+	disconnect_from_network()
 
 	peer = ENetMultiplayerPeer.new()
 
@@ -55,6 +80,7 @@ func create_server(port: int = DEFAULT_PORT) -> bool:
 	)
 
 	if result != OK:
+
 		push_error(
 			"فشل إنشاء السيرفر: %s" % result
 		)
@@ -69,18 +95,24 @@ func create_server(port: int = DEFAULT_PORT) -> bool:
 	server_port = port
 
 	connected_players.clear()
+	player_spawns.clear()
 
-	connected_players[
-		multiplayer.get_unique_id()
-	] = {
+	var host_id := multiplayer.get_unique_id()
+
+	var host_spawn := _generate_spawn_position()
+
+	player_spawns[host_id] = host_spawn
+
+	connected_players[host_id] = {
 		"name": Global.player_name,
-		"id": multiplayer.get_unique_id()
+		"id": host_id,
+		"spawn": host_spawn
 	}
 
 	server_started.emit()
 
 	print(
-		"Server started on port: ",
+		"Server started: ",
 		port
 	)
 
@@ -96,8 +128,7 @@ func connect_to_server(
 	port: int = DEFAULT_PORT
 ) -> bool:
 
-	if is_connected:
-		disconnect_from_network()
+	disconnect_from_network()
 
 	peer = ENetMultiplayerPeer.new()
 
@@ -107,8 +138,9 @@ func connect_to_server(
 	)
 
 	if result != OK:
+
 		push_error(
-			"فشل الاتصال بالسيرفر: %s" % result
+			"فشل إنشاء اتصال السيرفر: %s" % result
 		)
 
 		connection_failed.emit()
@@ -124,7 +156,7 @@ func connect_to_server(
 	server_port = port
 
 	print(
-		"Connecting to server: ",
+		"Connecting to ",
 		ip,
 		":",
 		port
@@ -140,6 +172,7 @@ func connect_to_server(
 func disconnect_from_network() -> void:
 
 	if multiplayer.multiplayer_peer != null:
+
 		multiplayer.multiplayer_peer.close()
 
 	multiplayer.multiplayer_peer = null
@@ -148,10 +181,11 @@ func disconnect_from_network() -> void:
 	is_connected = false
 
 	connected_players.clear()
+	player_spawns.clear()
 
 
 # =========================================================
-# CONNECTED
+# CONNECTED TO SERVER
 # =========================================================
 
 func _on_connected_to_server() -> void:
@@ -159,7 +193,7 @@ func _on_connected_to_server() -> void:
 	is_connected = true
 
 	print(
-		"Connected to server. ID: ",
+		"Connected. ID: ",
 		multiplayer.get_unique_id()
 	)
 
@@ -194,48 +228,88 @@ func _on_server_disconnected() -> void:
 
 	is_connected = false
 
+	connected_players.clear()
+	player_spawns.clear()
+
 	print(
 		"Server disconnected"
 	)
 
-	connected_players.clear()
-
 
 # =========================================================
-# PLAYER CONNECTED
+# PEER CONNECTED
 # =========================================================
 
-func _on_peer_connected(peer_id: int) -> void:
+func _on_peer_connected(
+	peer_id: int
+) -> void:
 
 	print(
-		"Player connected: ",
+		"Peer connected: ",
+		peer_id
+	)
+
+	if not is_server:
+		return
+
+	# إعطاء اللاعب مكان Spawn جديد
+	var spawn_position := _generate_spawn_position()
+
+	player_spawns[peer_id] = spawn_position
+
+	connected_players[peer_id] = {
+		"name": "لاعب",
+		"id": peer_id,
+		"spawn": spawn_position
+	}
+
+	# إرسال قائمة اللاعبين كاملة للاعب الجديد
+	sync_player_list.rpc_id(
+		peer_id,
+		connected_players
+	)
+
+	# إرسال Spawn للاعب الجديد
+	assign_spawn.rpc_id(
+		peer_id,
+		spawn_position
+	)
+
+	player_joined.emit(
+		peer_id
+	)
+
+
+# =========================================================
+# PEER DISCONNECTED
+# =========================================================
+
+func _on_peer_disconnected(
+	peer_id: int
+) -> void:
+
+	print(
+		"Peer disconnected: ",
+		peer_id
+	)
+
+	connected_players.erase(
+		peer_id
+	)
+
+	player_spawns.erase(
 		peer_id
 	)
 
 	if is_server:
 
-		connected_players[peer_id] = {
-			"name": "لاعب",
-			"id": peer_id
-		}
+		broadcast_player_left.rpc(
+			peer_id
+		)
 
-	player_joined.emit(peer_id)
-
-
-# =========================================================
-# PLAYER DISCONNECTED
-# =========================================================
-
-func _on_peer_disconnected(peer_id: int) -> void:
-
-	print(
-		"Player disconnected: ",
+	player_left.emit(
 		peer_id
 	)
-
-	connected_players.erase(peer_id)
-
-	player_left.emit(peer_id)
 
 
 # =========================================================
@@ -243,50 +317,213 @@ func _on_peer_disconnected(peer_id: int) -> void:
 # =========================================================
 
 @rpc("any_peer", "reliable")
-func register_player(player_name: String) -> void:
+func register_player(
+	player_name: String
+) -> void:
 
 	if not multiplayer.is_server():
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
 
-	connected_players[sender_id] = {
-		"name": player_name,
-		"id": sender_id
-	}
+	if not connected_players.has(
+		sender_id
+	):
+		return
+
+	if player_name.strip_edges().is_empty():
+		player_name = "لاعب"
+
+	player_name = player_name.strip_edges()
+
+	connected_players[
+		sender_id
+	]["name"] = player_name
 
 	print(
-		"Registered player: ",
+		"Player registered: ",
 		player_name,
-		" ID: ",
+		" / ",
 		sender_id
 	)
 
+	# إرسال قائمة اللاعبين للجميع
 	sync_player_list.rpc(
 		connected_players
 	)
 
 
 # =========================================================
-# PLAYER LIST
+# SYNC PLAYER LIST
 # =========================================================
 
-@rpc("authority", "call_local", "reliable")
-func sync_player_list(players: Dictionary) -> void:
+@rpc(
+	"authority",
+	"call_local",
+	"reliable"
+)
+func sync_player_list(
+	players: Dictionary
+) -> void:
 
-	connected_players = players.duplicate(true)
+	connected_players = players.duplicate(
+		true
+	)
 
 	print(
-		"Players online: ",
+		"Players synchronized: ",
 		connected_players.size()
+	)
+
+	var game := get_tree().current_scene
+
+	if game == null:
+		return
+
+	if game.has_method(
+		"sync_network_players"
+	):
+
+		game.sync_network_players(
+			connected_players
+		)
+
+
+# =========================================================
+# ASSIGN SPAWN
+# =========================================================
+
+@rpc(
+	"authority",
+	"call_local",
+	"reliable"
+)
+func assign_spawn(
+	spawn_position: Vector2
+) -> void:
+
+	var local_id := (
+		multiplayer.get_unique_id()
+	)
+
+	player_spawns[
+		local_id
+	] = spawn_position
+
+	var game := get_tree().current_scene
+
+	if game == null:
+		return
+
+	if game.has_method(
+		"set_local_spawn"
+	):
+
+		game.set_local_spawn(
+			spawn_position
+		)
+
+
+# =========================================================
+# BROADCAST PLAYER LEFT
+# =========================================================
+
+@rpc(
+	"authority",
+	"call_local",
+	"reliable"
+)
+func broadcast_player_left(
+	peer_id: int
+) -> void:
+
+	var game := get_tree().current_scene
+
+	if game == null:
+		return
+
+	if game.has_method(
+		"remote_player_left"
+	):
+
+		game.remote_player_left(
+			peer_id
+		)
+
+
+# =========================================================
+# GENERATE SPAWN
+# =========================================================
+
+func _generate_spawn_position() -> Vector2:
+
+	var attempts := 0
+
+	while attempts < 100:
+
+		attempts += 1
+
+		var candidate := Vector2(
+			rng.randf_range(
+				SPAWN_MARGIN,
+				MAP_SIZE.x -
+				SPAWN_MARGIN
+			),
+
+			rng.randf_range(
+				SPAWN_MARGIN,
+				MAP_SIZE.y -
+				SPAWN_MARGIN
+			)
+		)
+
+		var valid := true
+
+		for existing_spawn in player_spawns.values():
+
+			var existing := (
+				existing_spawn as Vector2
+			)
+
+			if candidate.distance_to(
+				existing
+			) < MIN_SPAWN_DISTANCE:
+
+				valid = false
+
+				break
+
+		if valid:
+			return candidate
+
+	# إذا لم نجد مكانًا مناسبًا
+	# نستخدم موقعًا عشوائيًا آمنًا
+
+	return Vector2(
+		rng.randf_range(
+			SPAWN_MARGIN,
+			MAP_SIZE.x -
+			SPAWN_MARGIN
+		),
+
+		rng.randf_range(
+			SPAWN_MARGIN,
+			MAP_SIZE.y -
+			SPAWN_MARGIN
+		)
 	)
 
 
 # =========================================================
-# SEND PLAYER STATE
+# PLAYER STATE
 # =========================================================
 
-@rpc("any_peer", "unreliable_ordered")
+@rpc(
+	"any_peer",
+	"unreliable_ordered"
+)
 func send_player_state(
 	player_position: Vector2,
 	player_direction: Vector2,
@@ -297,7 +534,31 @@ func send_player_state(
 	if not multiplayer.is_server():
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
+
+	if not connected_players.has(
+		sender_id
+	):
+		return
+
+	# حفظ آخر حالة للاعب
+	connected_players[
+		sender_id
+	]["position"] = player_position
+
+	connected_players[
+		sender_id
+	]["direction"] = player_direction
+
+	connected_players[
+		sender_id
+	]["length"] = player_length
+
+	connected_players[
+		sender_id
+	]["alive"] = player_alive
 
 	update_remote_player.rpc(
 		sender_id,
@@ -312,7 +573,10 @@ func send_player_state(
 # UPDATE REMOTE PLAYER
 # =========================================================
 
-@rpc("authority", "unreliable_ordered")
+@rpc(
+	"authority",
+	"unreliable_ordered"
+)
 func update_remote_player(
 	peer_id: int,
 	player_position: Vector2,
@@ -329,6 +593,7 @@ func update_remote_player(
 	if game.has_method(
 		"update_remote_player"
 	):
+
 		game.update_remote_player(
 			peer_id,
 			player_position,
@@ -339,7 +604,7 @@ func update_remote_player(
 
 
 # =========================================================
-# BROADCAST PLAYER STATE
+# BROADCAST LOCAL PLAYER STATE
 # =========================================================
 
 func broadcast_player_state(
@@ -353,8 +618,13 @@ func broadcast_player_state(
 		return
 
 	if is_server:
+
+		var local_id := (
+			multiplayer.get_unique_id()
+		)
+
 		update_remote_player.rpc(
-			multiplayer.get_unique_id(),
+			local_id,
 			player_position,
 			player_direction,
 			player_length,
@@ -362,6 +632,7 @@ func broadcast_player_state(
 		)
 
 	else:
+
 		send_player_state.rpc(
 			player_position,
 			player_direction,
@@ -371,27 +642,32 @@ func broadcast_player_state(
 
 
 # =========================================================
-# SEND DEATH
+# PLAYER DEATH
 # =========================================================
 
-@rpc("any_peer", "reliable")
+@rpc(
+	"any_peer",
+	"reliable"
+)
 func send_player_death() -> void:
 
 	if not multiplayer.is_server():
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
 
 	broadcast_player_death.rpc(
 		sender_id
 	)
 
 
-# =========================================================
-# BROADCAST DEATH
-# =========================================================
-
-@rpc("authority", "call_local", "reliable")
+@rpc(
+	"authority",
+	"call_local",
+	"reliable"
+)
 func broadcast_player_death(
 	peer_id: int
 ) -> void:
@@ -404,16 +680,20 @@ func broadcast_player_death(
 	if game.has_method(
 		"remote_player_died"
 	):
+
 		game.remote_player_died(
 			peer_id
 		)
 
 
 # =========================================================
-# SEND RESPAWN
+# PLAYER RESPAWN
 # =========================================================
 
-@rpc("any_peer", "reliable")
+@rpc(
+	"any_peer",
+	"reliable"
+)
 func send_player_respawn(
 	player_position: Vector2
 ) -> void:
@@ -421,7 +701,17 @@ func send_player_respawn(
 	if not multiplayer.is_server():
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
+
+	connected_players[
+		sender_id
+	]["position"] = player_position
+
+	connected_players[
+		sender_id
+	]["alive"] = true
 
 	broadcast_player_respawn.rpc(
 		sender_id,
@@ -429,11 +719,11 @@ func send_player_respawn(
 	)
 
 
-# =========================================================
-# BROADCAST RESPAWN
-# =========================================================
-
-@rpc("authority", "call_local", "reliable")
+@rpc(
+	"authority",
+	"call_local",
+	"reliable"
+)
 func broadcast_player_respawn(
 	peer_id: int,
 	player_position: Vector2
@@ -447,6 +737,7 @@ func broadcast_player_respawn(
 	if game.has_method(
 		"remote_player_respawned"
 	):
+
 		game.remote_player_respawned(
 			peer_id,
 			player_position
@@ -454,7 +745,7 @@ func broadcast_player_respawn(
 
 
 # =========================================================
-# GET PLAYER COUNT
+# PLAYER COUNT
 # =========================================================
 
 func get_player_count() -> int:
@@ -463,18 +754,23 @@ func get_player_count() -> int:
 
 
 # =========================================================
-# GET PLAYER NAME
+# PLAYER NAME
 # =========================================================
 
 func get_player_name(
 	peer_id: int
 ) -> String:
 
-	if not connected_players.has(peer_id):
+	if not connected_players.has(
+		peer_id
+	):
+
 		return "لاعب"
 
 	return str(
-		connected_players[peer_id].get(
+		connected_players[
+			peer_id
+		].get(
 			"name",
 			"لاعب"
 		)
@@ -482,7 +778,47 @@ func get_player_name(
 
 
 # =========================================================
-# CHECK SERVER
+# PLAYER SPAWN
+# =========================================================
+
+func get_player_spawn(
+	peer_id: int
+) -> Vector2:
+
+	if player_spawns.has(
+		peer_id
+	):
+
+		return player_spawns[
+			peer_id
+		]
+
+	if connected_players.has(
+		peer_id
+	):
+
+		var data: Dictionary = (
+			connected_players[peer_id]
+		)
+
+		if data.has("spawn"):
+
+			return data["spawn"]
+
+	return MAP_SIZE / 2.0
+
+
+# =========================================================
+# LOCAL ID
+# =========================================================
+
+func get_local_player_id() -> int:
+
+	return multiplayer.get_unique_id()
+
+
+# =========================================================
+# HOST CHECK
 # =========================================================
 
 func is_host() -> bool:
@@ -491,18 +827,9 @@ func is_host() -> bool:
 
 
 # =========================================================
-# CHECK CONNECTION
+# CONNECTION CHECK
 # =========================================================
 
 func is_network_connected() -> bool:
 
 	return is_connected
-
-
-# =========================================================
-# GET UNIQUE ID
-# =========================================================
-
-func get_local_player_id() -> int:
-
-	return multiplayer.get_unique_id()
