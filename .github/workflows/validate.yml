@@ -1,0 +1,55 @@
+name: Validate Godot Project
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Godot Project
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.1
+          use-dotnet: false
+          include-export-templates: true
+
+      - name: Check project files
+        run: |
+          test -f project.godot
+          test -d scenes
+          test -d scripts
+          test -d assets
+          echo "Project structure OK"
+
+      - name: Validate project
+        run: |
+          godot --headless --path . --editor --quit
+
+      - name: Import project
+        run: |
+          godot --headless --path . --editor --quit-after 5
+
+      - name: Validation completed
+        run: |
+          echo "Snake Arab Online validation completed successfully."
