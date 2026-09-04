@@ -47,7 +47,9 @@ boost={
 }
 
 [autoload]
+
 Global="*res://scripts/global.gd"
+Network="*res://scripts/network.gd"
 
 [physics]
 common/physics_ticks_per_second=60
