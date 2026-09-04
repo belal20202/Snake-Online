@@ -3,8 +3,8 @@ extends Node
 # =========================================================
 # SNAKE ARAB ONLINE
 # NETWORK
-# STEP 6.6.6
-# SERVER AUTHORITATIVE SNAKE COLLISIONS
+# STEP 6.6.7
+# FOOD + LOOT SYNCHRONIZATION
 # =========================================================
 
 signal player_joined(peer_id: int, player_data: Dictionary)
@@ -22,18 +22,44 @@ const MIN_SPAWN_DISTANCE := 500.0
 const COLLISION_DISTANCE := 32.0
 const HEAD_TO_HEAD_DISTANCE := 42.0
 
-var peer: ENetMultiplayerPeer
+const FOOD_COUNT := 180
+const LOOT_PER_LENGTH := 2
+const MAX_LOOT_PER_DEATH := 60
 
+var peer: ENetMultiplayerPeer
 var is_server := false
 
 var connected_players: Dictionary = {}
 var player_spawns: Dictionary = {}
-
-# آخر حالة معروفة لكل لاعب
 var player_states: Dictionary = {}
 
-# حماية بسيطة من إرسال أوامر متكررة بسرعة
+# =========================================================
+# SERVER AUTHORITATIVE FOOD
+# =========================================================
+
+var foods: Dictionary = {}
+
+var next_food_id: int = 1
+
+const FOOD_VALUE := 10
+const FOOD_COIN_VALUE := 1
+const FOOD_XP_VALUE := 5
+
+# =========================================================
+# SERVER LOOT
+# =========================================================
+
+var loot: Dictionary = {}
+
+var next_loot_id: int = 100000
+
+const LOOT_VALUE := 25
+const LOOT_COIN_VALUE := 2
+const LOOT_XP_VALUE := 10
+
 var last_collision_check := 0.0
+var last_state_broadcast := 0.0
+
 
 # =========================================================
 # READY
@@ -53,7 +79,7 @@ func _ready() -> void:
 
 
 # =========================================================
-# HOST
+# CREATE SERVER
 # =========================================================
 
 func create_server() -> bool:
@@ -96,21 +122,15 @@ func create_server() -> bool:
 		"alive": true
 	}
 
-	print(
-		"Server started on port ",
-		PORT
-	)
+	_create_initial_food()
 
-	print(
-		"Host spawn: ",
-		spawn
-	)
+	print("Server started on port ", PORT)
 
 	return true
 
 
 # =========================================================
-# CONNECT TO SERVER
+# CONNECT
 # =========================================================
 
 func connect_to_server(
@@ -160,6 +180,9 @@ func disconnect_from_server() -> void:
 	player_spawns.clear()
 	player_states.clear()
 
+	foods.clear()
+	loot.clear()
+
 	is_server = false
 
 	disconnected.emit()
@@ -198,20 +221,33 @@ func _on_peer_connected(
 		"alive": true
 	}
 
-	# أرسل للاعب الجديد قائمة اللاعبين
+	# إرسال قائمة اللاعبين
 	sync_player_list.rpc_id(
 		peer_id,
 		connected_players
 	)
 
-	# أعطه Spawn
+	# إرسال Spawn
 	assign_spawn.rpc_id(
 		peer_id,
 		spawn
 	)
 
-	# أخبر الجميع بوجود اللاعب الجديد
-	var data: Dictionary = connected_players[peer_id]
+	# إرسال الطعام الحالي
+	sync_food.rpc_id(
+		peer_id,
+		foods
+	)
+
+	# إرسال الـLoot الحالي
+	sync_loot.rpc_id(
+		peer_id,
+		loot
+	)
+
+	var data: Dictionary = connected_players[
+		peer_id
+	]
 
 	player_joined.emit(
 		peer_id,
@@ -251,7 +287,7 @@ func _on_peer_disconnected(
 
 
 # =========================================================
-# BROADCAST PLAYER JOINED
+# PLAYER JOIN
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
@@ -280,7 +316,7 @@ func broadcast_player_joined(
 
 
 # =========================================================
-# BROADCAST PLAYER LEFT
+# PLAYER LEFT
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
@@ -314,13 +350,22 @@ func register_player(
 	player_name: String
 ) -> void:
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	if not is_server:
+		return
+
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
 
 	if sender_id == 0:
 		sender_id = multiplayer.get_unique_id()
 
-	if not is_server:
-		return
+	player_name = player_name.strip_edges()
+
+	if player_name.is_empty():
+		player_name = "لاعب"
+
+	player_name = player_name.left(18)
 
 	if not connected_players.has(sender_id):
 
@@ -343,9 +388,9 @@ func register_player(
 
 	else:
 
-		connected_players[sender_id]["name"] = (
-			player_name
-		)
+		connected_players[
+			sender_id
+		]["name"] = player_name
 
 	var data: Dictionary = connected_players[
 		sender_id
@@ -375,7 +420,9 @@ func sync_player_list(
 	players: Dictionary
 ) -> void:
 
-	connected_players = players.duplicate(true)
+	connected_players = players.duplicate(
+		true
+	)
 
 	for key in players.keys():
 
@@ -423,7 +470,7 @@ func assign_spawn(
 
 
 # =========================================================
-# BROADCAST JOIN
+# PLAYER JOIN BROADCAST
 # =========================================================
 
 func _broadcast_player_joined(
@@ -455,19 +502,19 @@ func receive_player_state(
 	if not is_server:
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
 
 	if sender_id == 0:
 		sender_id = multiplayer.get_unique_id()
 
-	# حماية من أطوال غير منطقية
 	player_length = clamp(
 		player_length,
 		5,
 		10000
 	)
 
-	# حماية من الإحداثيات الخارجة جدًا
 	player_position.x = clamp(
 		player_position.x,
 		0.0,
@@ -489,14 +536,20 @@ func receive_player_state(
 
 	if connected_players.has(sender_id):
 
-		connected_players[sender_id]["alive"] = (
-			player_alive
-		)
+		connected_players[
+			sender_id
+		]["alive"] = player_alive
 
-	# فحص التصادم على السيرفر
 	_check_server_collisions()
 
-	# بث الحالة إلى جميع العملاء
+	_check_food_collection_for_player(
+		sender_id
+	)
+
+	_check_loot_collection_for_player(
+		sender_id
+	)
+
 	update_remote_player.rpc(
 		sender_id,
 		player_position,
@@ -532,6 +585,14 @@ func broadcast_player_state(
 		}
 
 		_check_server_collisions()
+
+		_check_food_collection_for_player(
+			local_id
+		)
+
+		_check_loot_collection_for_player(
+			local_id
+		)
 
 		update_remote_player.rpc(
 			local_id,
@@ -587,7 +648,7 @@ func update_remote_player(
 
 
 # =========================================================
-# SERVER COLLISION SYSTEM
+# SERVER COLLISIONS
 # =========================================================
 
 func _check_server_collisions() -> void:
@@ -652,7 +713,7 @@ func _check_server_collisions() -> void:
 
 
 # =========================================================
-# CHECK TWO SNAKES
+# CHECK SNAKE PAIR
 # =========================================================
 
 func _check_snake_pair(
@@ -674,7 +735,6 @@ func _check_snake_pair(
 		second_position
 	)
 
-	# رأس مقابل رأس
 	if distance <= HEAD_TO_HEAD_DISTANCE:
 
 		var first_length := int(
@@ -701,7 +761,6 @@ func _check_snake_pair(
 
 		else:
 
-			# إذا كانا بنفس الطول يموتان
 			_kill_player(
 				first_id,
 				second_id
@@ -714,7 +773,6 @@ func _check_snake_pair(
 
 		return
 
-	# اصطدام جسم أحد اللاعبين
 	if distance <= COLLISION_DISTANCE:
 
 		var first_length := int(
@@ -761,13 +819,7 @@ func _kill_player(
 	):
 		return
 
-	player_states[victim_id]["alive"] = false
-
-	if connected_players.has(victim_id):
-
-		connected_players[victim_id]["alive"] = false
-
-	var victim_position: Vector2 = (
+	var death_position: Vector2 = (
 		player_states[victim_id]["position"]
 	)
 
@@ -775,34 +827,35 @@ func _kill_player(
 		player_states[victim_id]["length"]
 	)
 
+	player_states[victim_id]["alive"] = false
+
+	if connected_players.has(victim_id):
+
+		connected_players[
+			victim_id
+		]["alive"] = false
+
+	# إنشاء Loot
+	_spawn_death_loot(
+		death_position,
+		victim_length
+	)
+
 	var reward := max(
 		10,
 		victim_length * 2
 	)
 
-	if player_states.has(killer_id):
-
-		player_states[killer_id]["length"] = (
-			int(
-				player_states[killer_id]["length"]
-			) + min(
-				victim_length,
-				50
-			)
-		)
-
-	# إرسال الموت
 	player_died.rpc(
 		victim_id,
 		killer_id,
-		victim_position,
+		death_position,
 		reward
 	)
 
-	# إرسال تحديث الحالة
 	update_remote_player.rpc(
 		victim_id,
-		victim_position,
+		death_position,
 		Vector2.RIGHT,
 		victim_length,
 		false
@@ -817,7 +870,7 @@ func _kill_player(
 
 
 # =========================================================
-# PLAYER DIED RPC
+# PLAYER DIED
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
@@ -851,58 +904,624 @@ func player_died(
 
 
 # =========================================================
-# BROADCAST DEATH
+# INITIAL FOOD
 # =========================================================
 
-func broadcast_player_death() -> void:
-
-	if not multiplayer.has_multiplayer_peer():
-		return
-
-	if is_server:
-
-		var local_id := multiplayer.get_unique_id()
-
-		if player_states.has(local_id):
-
-			player_states[local_id]["alive"] = false
-
-			player_died.rpc(
-				local_id,
-				0,
-				player_states[local_id]["position"],
-				0
-			)
-
-	else:
-
-		request_player_death.rpc()
-
-
-# =========================================================
-# REQUEST DEATH
-# =========================================================
-
-@rpc("any_peer", "reliable")
-func request_player_death() -> void:
+func _create_initial_food() -> void:
 
 	if not is_server:
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	foods.clear()
 
-	if player_states.has(sender_id):
+	for i in range(FOOD_COUNT):
 
-		player_states[sender_id]["alive"] = false
+		var position := _generate_food_position()
 
-	player_died.rpc(
-		sender_id,
-		0,
-		player_states[sender_id]["position"]
-		if player_states.has(sender_id)
-		else Vector2.ZERO,
-		0
+		_add_food(
+			position
+		)
+
+
+# =========================================================
+# GENERATE FOOD POSITION
+# =========================================================
+
+func _generate_food_position() -> Vector2:
+
+	return Vector2(
+		randf_range(
+			100.0,
+			MAP_SIZE.x - 100.0
+		),
+		randf_range(
+			100.0,
+			MAP_SIZE.y - 100.0
+		)
 	)
+
+
+# =========================================================
+# ADD FOOD
+# =========================================================
+
+func _add_food(
+	position: Vector2
+) -> int:
+
+	var food_id := next_food_id
+
+	next_food_id += 1
+
+	foods[food_id] = {
+		"position": position,
+		"value": FOOD_VALUE,
+		"coins": FOOD_COIN_VALUE,
+		"xp": FOOD_XP_VALUE
+	}
+
+	return food_id
+
+
+# =========================================================
+# SYNC FOOD
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func sync_food(
+	server_foods: Dictionary
+) -> void:
+
+	foods = server_foods.duplicate(
+		true
+	)
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"sync_network_food"
+	):
+
+		scene.sync_network_food(
+			foods
+		)
+
+
+# =========================================================
+# FOOD COLLECT REQUEST
+# =========================================================
+
+@rpc("any_peer", "reliable")
+func request_collect_food(
+	food_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
+
+	if sender_id == 0:
+		sender_id = multiplayer.get_unique_id()
+
+	_collect_food_for_player(
+		sender_id,
+		food_id
+	)
+
+
+# =========================================================
+# SERVER FOOD COLLECTION
+# =========================================================
+
+func _check_food_collection_for_player(
+	peer_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	if not player_states.has(peer_id):
+		return
+
+	if not player_states[peer_id].get(
+		"alive",
+		true
+	):
+		return
+
+	var player_position: Vector2 = (
+		player_states[peer_id]["position"]
+	)
+
+	var collected_ids: Array[int] = []
+
+	for key in foods.keys():
+
+		var food_id := int(key)
+
+		var food_data: Dictionary = foods[key]
+
+		var food_position: Vector2 = (
+			food_data["position"]
+		)
+
+		if player_position.distance_to(
+			food_position
+		) <= 48.0:
+
+			collected_ids.append(
+				food_id
+			)
+
+			if collected_ids.size() >= 3:
+				break
+
+	for food_id in collected_ids:
+
+		_collect_food_for_player(
+			peer_id,
+			food_id
+		)
+
+
+# =========================================================
+# COLLECT FOOD
+# =========================================================
+
+func _collect_food_for_player(
+	peer_id: int,
+	food_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	if not foods.has(food_id):
+		return
+
+	if not player_states.has(peer_id):
+		return
+
+	if not player_states[peer_id].get(
+		"alive",
+		true
+	):
+		return
+
+	var food_data: Dictionary = foods[
+		food_id
+	]
+
+	var player_position: Vector2 = (
+		player_states[peer_id]["position"]
+	)
+
+	var food_position: Vector2 = (
+		food_data["position"]
+	)
+
+	if player_position.distance_to(
+		food_position
+	) > 60.0:
+		return
+
+	foods.erase(food_id)
+
+	# زيادة طول اللاعب
+	var old_length := int(
+		player_states[peer_id]["length"]
+	)
+
+	var new_length := old_length + 1
+
+	player_states[peer_id]["length"] = (
+		new_length
+	)
+
+	# إرسال نتيجة الجمع للجميع
+	food_collected.rpc(
+		food_id,
+		peer_id,
+		food_position,
+		new_length,
+		int(food_data["value"]),
+		int(food_data["coins"]),
+		int(food_data["xp"])
+	)
+
+	# تعويض الطعام المحذوف
+	var new_food_position := (
+		_generate_food_position()
+	)
+
+	var new_food_id := _add_food(
+		new_food_position
+	)
+
+	food_spawned.rpc(
+		new_food_id,
+		new_food_position,
+		FOOD_VALUE,
+		FOOD_COIN_VALUE,
+		FOOD_XP_VALUE
+	)
+
+
+# =========================================================
+# FOOD COLLECTED RPC
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func food_collected(
+	food_id: int,
+	collector_id: int,
+	position: Vector2,
+	new_length: int,
+	value: int,
+	coins: int,
+	xp: int
+) -> void:
+
+	foods.erase(food_id)
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"network_food_collected"
+	):
+
+		scene.network_food_collected(
+			food_id,
+			collector_id,
+			position,
+			new_length,
+			value,
+			coins,
+			xp
+		)
+
+
+# =========================================================
+# FOOD SPAWNED
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func food_spawned(
+	food_id: int,
+	position: Vector2,
+	value: int,
+	coins: int,
+	xp: int
+) -> void:
+
+	foods[food_id] = {
+		"position": position,
+		"value": value,
+		"coins": coins,
+		"xp": xp
+	}
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"network_food_spawned"
+	):
+
+		scene.network_food_spawned(
+			food_id,
+			position,
+			value,
+			coins,
+			xp
+		)
+
+
+# =========================================================
+# DEATH LOOT
+# =========================================================
+
+func _spawn_death_loot(
+	death_position: Vector2,
+	victim_length: int
+) -> void:
+
+	if not is_server:
+		return
+
+	var amount := clamp(
+		victim_length * LOOT_PER_LENGTH,
+		5,
+		MAX_LOOT_PER_DEATH
+	)
+
+	for i in range(amount):
+
+		var angle := (
+			float(i) / float(amount)
+		) * TAU
+
+		var distance := randf_range(
+			20.0,
+			120.0
+		)
+
+		var position := death_position + Vector2(
+			cos(angle),
+			sin(angle)
+		) * distance
+
+		position.x = clamp(
+			position.x,
+			50.0,
+			MAP_SIZE.x - 50.0
+		)
+
+		position.y = clamp(
+			position.y,
+			50.0,
+			MAP_SIZE.y - 50.0
+		)
+
+		var loot_id := next_loot_id
+
+		next_loot_id += 1
+
+		loot[loot_id] = {
+			"position": position,
+			"value": LOOT_VALUE,
+			"coins": LOOT_COIN_VALUE,
+			"xp": LOOT_XP_VALUE
+		}
+
+		loot_spawned.rpc(
+			loot_id,
+			position,
+			LOOT_VALUE,
+			LOOT_COIN_VALUE,
+			LOOT_XP_VALUE
+		)
+
+
+# =========================================================
+# SYNC LOOT
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func sync_loot(
+	server_loot: Dictionary
+) -> void:
+
+	loot = server_loot.duplicate(
+		true
+	)
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"sync_network_loot"
+	):
+
+		scene.sync_network_loot(
+			loot
+		)
+
+
+# =========================================================
+# LOOT COLLECTION CHECK
+# =========================================================
+
+func _check_loot_collection_for_player(
+	peer_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	if not player_states.has(peer_id):
+		return
+
+	if not player_states[peer_id].get(
+		"alive",
+		true
+	):
+		return
+
+	var player_position: Vector2 = (
+		player_states[peer_id]["position"]
+	)
+
+	var collected_ids: Array[int] = []
+
+	for key in loot.keys():
+
+		var loot_id := int(key)
+
+		var loot_data: Dictionary = loot[
+			loot_id
+		]
+
+		var loot_position: Vector2 = (
+			loot_data["position"]
+		)
+
+		if player_position.distance_to(
+			loot_position
+		) <= 55.0:
+
+			collected_ids.append(
+				loot_id
+			)
+
+			if collected_ids.size() >= 5:
+				break
+
+	for loot_id in collected_ids:
+
+		_collect_loot_for_player(
+			peer_id,
+			loot_id
+		)
+
+
+# =========================================================
+# REQUEST LOOT
+# =========================================================
+
+@rpc("any_peer", "reliable")
+func request_collect_loot(
+	loot_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
+
+	if sender_id == 0:
+		sender_id = multiplayer.get_unique_id()
+
+	_collect_loot_for_player(
+		sender_id,
+		loot_id
+	)
+
+
+# =========================================================
+# COLLECT LOOT
+# =========================================================
+
+func _collect_loot_for_player(
+	peer_id: int,
+	loot_id: int
+) -> void:
+
+	if not is_server:
+		return
+
+	if not loot.has(loot_id):
+		return
+
+	if not player_states.has(peer_id):
+		return
+
+	if not player_states[peer_id].get(
+		"alive",
+		true
+	):
+		return
+
+	var loot_data: Dictionary = loot[
+		loot_id
+	]
+
+	var player_position: Vector2 = (
+		player_states[peer_id]["position"]
+	)
+
+	var loot_position: Vector2 = (
+		loot_data["position"]
+	)
+
+	if player_position.distance_to(
+		loot_position
+	) > 70.0:
+		return
+
+	loot.erase(loot_id)
+
+	var old_length := int(
+		player_states[peer_id]["length"]
+	)
+
+	var new_length := old_length + 2
+
+	player_states[peer_id]["length"] = (
+		new_length
+	)
+
+	loot_collected.rpc(
+		loot_id,
+		peer_id,
+		loot_position,
+		new_length,
+		int(loot_data["value"]),
+		int(loot_data["coins"]),
+		int(loot_data["xp"])
+	)
+
+
+# =========================================================
+# LOOT SPAWNED
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func loot_spawned(
+	loot_id: int,
+	position: Vector2,
+	value: int,
+	coins: int,
+	xp: int
+) -> void:
+
+	loot[loot_id] = {
+		"position": position,
+		"value": value,
+		"coins": coins,
+		"xp": xp
+	}
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"network_loot_spawned"
+	):
+
+		scene.network_loot_spawned(
+			loot_id,
+			position,
+			value,
+			coins,
+			xp
+		)
+
+
+# =========================================================
+# LOOT COLLECTED
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func loot_collected(
+	loot_id: int,
+	collector_id: int,
+	position: Vector2,
+	new_length: int,
+	value: int,
+	coins: int,
+	xp: int
+) -> void:
+
+	loot.erase(loot_id)
+
+	var scene := get_tree().current_scene
+
+	if scene and scene.has_method(
+		"network_loot_collected"
+	):
+
+		scene.network_loot_collected(
+			loot_id,
+			collector_id,
+			position,
+			new_length,
+			value,
+			coins,
+			xp
+		)
 
 
 # =========================================================
@@ -929,7 +1548,9 @@ func broadcast_player_respawn(
 
 		if connected_players.has(local_id):
 
-			connected_players[local_id]["alive"] = true
+			connected_players[
+				local_id
+			]["alive"] = true
 
 		player_respawned.rpc(
 			local_id,
@@ -955,7 +1576,9 @@ func request_player_respawn(
 	if not is_server:
 		return
 
-	var sender_id := multiplayer.get_remote_sender_id()
+	var sender_id := (
+		multiplayer.get_remote_sender_id()
+	)
 
 	var spawn := _generate_spawn_position()
 
@@ -970,8 +1593,13 @@ func request_player_respawn(
 
 	if connected_players.has(sender_id):
 
-		connected_players[sender_id]["spawn"] = spawn
-		connected_players[sender_id]["alive"] = true
+		connected_players[
+			sender_id
+		]["spawn"] = spawn
+
+		connected_players[
+			sender_id
+		]["alive"] = true
 
 	player_respawned.rpc(
 		sender_id,
@@ -980,7 +1608,7 @@ func request_player_respawn(
 
 
 # =========================================================
-# PLAYER RESPAWNED RPC
+# PLAYER RESPAWNED
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
@@ -1048,7 +1676,6 @@ func _generate_spawn_position() -> Vector2:
 			nearest_distance = INF
 
 		if nearest_distance >= MIN_SPAWN_DISTANCE:
-
 			return candidate
 
 		if nearest_distance > best_distance:
@@ -1060,7 +1687,7 @@ func _generate_spawn_position() -> Vector2:
 
 
 # =========================================================
-# GET PLAYER SPAWN
+# GET SPAWN
 # =========================================================
 
 func get_player_spawn(
@@ -1097,7 +1724,16 @@ func get_player_name(
 
 
 # =========================================================
-# LOCAL PLAYER NAME
+# GET PLAYER COUNT
+# =========================================================
+
+func get_player_count() -> int:
+
+	return connected_players.size()
+
+
+# =========================================================
+# LOCAL NAME
 # =========================================================
 
 func _get_local_player_name() -> String:
@@ -1108,12 +1744,3 @@ func _get_local_player_name() -> String:
 			return Global.player_name
 
 	return "لاعب"
-
-
-# =========================================================
-# PLAYER COUNT
-# =========================================================
-
-func get_player_count() -> int:
-
-	return connected_players.size()
