@@ -18,26 +18,70 @@ jobs:
 
     steps:
 
-      - name: Checkout repository
+      # 1. تحميل المشروع
+      - name: Checkout
         uses: actions/checkout@v4
 
+
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+
+      # 3. Android SDK
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK components
+
+      # 4. تحديد مسار Android SDK
+      - name: Configure Android SDK
         shell: bash
         run: |
           set -e
 
-          yes | sdkmanager --licenses >/dev/null || true
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
 
-          sdkmanager \
+          if [ -z "$ANDROID_HOME" ]; then
+            export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          fi
+
+          if [ -z "$ANDROID_HOME" ]; then
+            export ANDROID_HOME="$HOME/android-sdk"
+          fi
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+          mkdir -p "$ANDROID_HOME"
+
+          echo "Android SDK path:"
+          echo "$ANDROID_HOME"
+
+
+      # 5. تثبيت Android SDK
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+
+          sdkmanager --sdk_root="$ANDROID_HOME" --licenses <<EOF || true
+y
+y
+y
+y
+y
+y
+y
+y
+EOF
+
+          sdkmanager --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
@@ -45,6 +89,31 @@ jobs:
             "cmake;3.10.2.4988404" \
             "ndk;28.1.13356709"
 
+
+      # 6. التأكد من ADB
+      - name: Setup ADB
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking ADB..."
+
+          test -f "$ANDROID_HOME/platform-tools/adb"
+
+          chmod +x "$ANDROID_HOME/platform-tools/adb"
+
+          adb version
+
+          adb start-server
+
+          sleep 2
+
+          adb devices
+
+          echo "ADB is ready."
+
+
+      # 7. تثبيت Godot + Templates
       - name: Setup Godot 4.5.1
         uses: chickensoft-games/setup-godot@v2
         with:
@@ -52,6 +121,8 @@ jobs:
           use-dotnet: false
           include-templates: true
 
+
+      # 8. التحقق من Godot
       - name: Verify Godot
         shell: bash
         run: |
@@ -59,9 +130,11 @@ jobs:
 
           godot --version
 
-          echo "Godot installed successfully."
+          echo "Godot is ready."
 
-      - name: Verify project files
+
+      # 9. التحقق من المشروع
+      - name: Verify Project
         shell: bash
         run: |
           set -e
@@ -69,9 +142,12 @@ jobs:
           test -f project.godot
           test -f export_presets.cfg
 
-          echo "Project files found."
+          echo "project.godot found."
+          echo "export_presets.cfg found."
 
-      - name: Verify Android preset
+
+      # 10. التحقق من Preset
+      - name: Verify Android Preset
         shell: bash
         run: |
           set -e
@@ -79,33 +155,39 @@ jobs:
           grep -q 'name="Android"' export_presets.cfg
           grep -q 'platform="Android"' export_presets.cfg
 
-          echo "Android preset found."
+          echo "Android preset OK."
 
-      - name: Verify Android export templates
+
+      # 11. التحقق من Templates
+      - name: Verify Export Templates
         shell: bash
         run: |
           set -e
 
           TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.5.1.stable"
 
-          echo "Checking:"
+          echo "Template directory:"
           echo "$TEMPLATE_DIR"
 
           if [ ! -f "$TEMPLATE_DIR/android_debug.apk" ]; then
-            echo "ERROR: android_debug.apk not found."
-            echo "Installed export templates:"
-            find "$HOME/.local/share/godot" -type f -name "android_debug.apk" -o -name "android_release.apk" || true
+            echo "ERROR: android_debug.apk is missing."
+            find "$HOME/.local/share/godot/export_templates" \
+              -maxdepth 3 \
+              -type f \
+              -print || true
             exit 1
           fi
 
           if [ ! -f "$TEMPLATE_DIR/android_release.apk" ]; then
-            echo "ERROR: android_release.apk not found."
+            echo "ERROR: android_release.apk is missing."
             exit 1
           fi
 
-          echo "Android export templates found."
+          echo "Android templates OK."
 
-      - name: Import Godot project
+
+      # 12. فحص المشروع
+      - name: Import Godot Project
         shell: bash
         run: |
           set -e
@@ -118,26 +200,36 @@ jobs:
 
           echo "Godot project imported successfully."
 
-      - name: Create build directory
+
+      # 13. إنشاء مجلد البناء
+      - name: Prepare Build
         shell: bash
         run: |
           set -e
 
           mkdir -p build
+
           rm -f build/SnakeArabOnline.apk
 
-      - name: Build Android APK
+
+      # 14. بناء APK
+      - name: Build APK
         shell: bash
         run: |
           set -e
 
+          echo "Starting Android APK export..."
+
           godot \
             --headless \
             --path "." \
+            --verbose \
             --export-debug \
             "Android" \
             "build/SnakeArabOnline.apk"
 
+
+      # 15. التأكد من APK
       - name: Verify APK
         shell: bash
         run: |
@@ -149,16 +241,19 @@ jobs:
           fi
 
           if [ ! -s "build/SnakeArabOnline.apk" ]; then
-            echo "ERROR: APK is empty."
+            echo "ERROR: APK file is empty."
             exit 1
           fi
 
-          echo "======================================"
-          echo "APK CREATED SUCCESSFULLY"
-          echo "======================================"
+          echo ""
+          echo "=========================================="
+          echo "       APK CREATED SUCCESSFULLY"
+          echo "=========================================="
 
           ls -lh build/SnakeArabOnline.apk
 
+
+      # 16. رفع APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
