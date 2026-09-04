@@ -1,65 +1,110 @@
 extends Node
 
 # =========================================================
-# SNAKE ARAB ONLINE
-# NETWORK
-# STEP 6.6.7
-# FOOD + LOOT SYNCHRONIZATION
+# Snake Arab Online
+# Network Manager
+# Step 6.6.8
+# Server Authoritative Multiplayer
 # =========================================================
 
-signal player_joined(peer_id: int, player_data: Dictionary)
+signal connected_to_server
+signal connection_failed
+
+signal player_connected(peer_id: int)
+signal player_disconnected(peer_id: int)
+
+signal player_joined(peer_id: int, player_name: String)
 signal player_left(peer_id: int)
-signal connected
-signal disconnected
+
+signal network_players_synced(players: Dictionary)
+
+signal player_died(
+	peer_id: int,
+	killer_id: int,
+	death_position: Vector2,
+	reward: int
+)
+
+signal player_respawned(
+	peer_id: int,
+	respawn_position: Vector2
+)
+
+# =========================================================
+# SETTINGS
+# =========================================================
 
 const PORT := 7777
 const MAX_PLAYERS := 20
 
 const MAP_SIZE := Vector2(4000.0, 4000.0)
+
 const SPAWN_MARGIN := 350.0
 const MIN_SPAWN_DISTANCE := 500.0
 
-const COLLISION_DISTANCE := 32.0
+# Collision
 const HEAD_TO_HEAD_DISTANCE := 42.0
+const HEAD_TO_BODY_DISTANCE := 34.0
+const COLLISION_START_INDEX := 5
 
+# Food
 const FOOD_COUNT := 180
-const LOOT_PER_LENGTH := 2
-const MAX_LOOT_PER_DEATH := 60
+const FOOD_VALUE := 10
+const FOOD_COIN_VALUE := 5
+const FOOD_XP_VALUE := 2
+const FOOD_COLLECTION_DISTANCE := 48.0
+
+# Death loot
+const DEATH_LOOT_COUNT := 8
+const DEATH_LOOT_VALUE := 15
+const DEATH_LOOT_COIN_VALUE := 10
+const DEATH_LOOT_XP_VALUE := 5
+const LOOT_COLLECTION_DISTANCE := 55.0
+
+# Network
+const STATE_INTERVAL := 0.05
+const MAX_BODY_POINTS := 250
+
+# =========================================================
+# NETWORK
+# =========================================================
 
 var peer: ENetMultiplayerPeer
-var is_server := false
+var is_host := false
+
+# =========================================================
+# PLAYERS
+# =========================================================
 
 var connected_players: Dictionary = {}
+
 var player_spawns: Dictionary = {}
+
 var player_states: Dictionary = {}
 
 # =========================================================
-# SERVER AUTHORITATIVE FOOD
+# FOOD
 # =========================================================
 
 var foods: Dictionary = {}
 
 var next_food_id: int = 1
 
-const FOOD_VALUE := 10
-const FOOD_COIN_VALUE := 1
-const FOOD_XP_VALUE := 5
-
 # =========================================================
-# SERVER LOOT
+# LOOT
 # =========================================================
 
 var loot: Dictionary = {}
 
-var next_loot_id: int = 100000
+var next_loot_id: int = 1
 
-const LOOT_VALUE := 25
-const LOOT_COIN_VALUE := 2
-const LOOT_XP_VALUE := 10
+# =========================================================
+# TIMERS
+# =========================================================
 
-var last_collision_check := 0.0
-var last_state_broadcast := 0.0
-
+var collision_timer := 0.0
+var food_timer := 0.0
+var loot_timer := 0.0
 
 # =========================================================
 # READY
@@ -75,106 +120,157 @@ func _ready() -> void:
 		_on_peer_disconnected
 	)
 
-	print("Network initialized")
+	multiplayer.connected_to_server.connect(
+		_on_connected_to_server
+	)
+
+	multiplayer.connection_failed.connect(
+		_on_connection_failed
+	)
+
+	set_process(true)
 
 
 # =========================================================
-# CREATE SERVER
+# PROCESS
 # =========================================================
 
-func create_server() -> bool:
+func _process(delta: float) -> void:
+
+	if not is_host:
+		return
+
+	if multiplayer.multiplayer_peer == null:
+		return
+
+	collision_timer += delta
+	food_timer += delta
+	loot_timer += delta
+
+	# Collision check
+	if collision_timer >= 0.05:
+
+		collision_timer = 0.0
+
+		_check_server_collisions()
+
+	# Keep food populated
+	if food_timer >= 2.0:
+
+		food_timer = 0.0
+
+		_maintain_food()
+
+	# Remove old invalid loot
+	if loot_timer >= 5.0:
+
+		loot_timer = 0.0
+
+		_cleanup_loot()
+
+
+# =========================================================
+# HOST GAME
+# =========================================================
+
+func host_game() -> bool:
+
+	close_connection()
 
 	peer = ENetMultiplayerPeer.new()
 
-	var result := peer.create_server(
+	var error := peer.create_server(
 		PORT,
 		MAX_PLAYERS
 	)
 
-	if result != OK:
+	if error != OK:
 
 		push_error(
-			"Failed to create server: %s" % result
+			"Failed to create server: %s" % error
 		)
 
 		return false
 
 	multiplayer.multiplayer_peer = peer
 
-	is_server = true
+	is_host = true
 
-	var local_id := multiplayer.get_unique_id()
+	# Server player
+	var server_id := multiplayer.get_unique_id()
 
 	var spawn := _generate_spawn_position()
 
-	connected_players[local_id] = {
-		"name": _get_local_player_name(),
-		"spawn": spawn,
-		"alive": true
+	player_spawns[server_id] = spawn
+
+	connected_players[server_id] = {
+		"name": Global.player_name,
+		"spawn": spawn
 	}
 
-	player_spawns[local_id] = spawn
-
-	player_states[local_id] = {
+	player_states[server_id] = {
 		"position": spawn,
 		"direction": Vector2.RIGHT,
 		"length": 10,
-		"alive": true
+		"alive": true,
+		"body": []
 	}
 
 	_create_initial_food()
 
-	print("Server started on port ", PORT)
-
 	return true
 
 
 # =========================================================
-# CONNECT
+# JOIN GAME
 # =========================================================
 
-func connect_to_server(
-	address: String
-) -> bool:
+func join_game(ip_address: String) -> bool:
+
+	close_connection()
+
+	var clean_ip := ip_address.strip_edges()
+
+	if clean_ip.is_empty():
+		return false
 
 	peer = ENetMultiplayerPeer.new()
 
-	var result := peer.create_client(
-		address,
+	var error := peer.create_client(
+		clean_ip,
 		PORT
 	)
 
-	if result != OK:
+	if error != OK:
 
 		push_error(
-			"Failed to connect: %s" % result
+			"Failed to connect: %s" % error
 		)
 
 		return false
 
 	multiplayer.multiplayer_peer = peer
 
-	is_server = false
-
-	print(
-		"Connecting to server: ",
-		address
-	)
+	is_host = false
 
 	return true
 
 
 # =========================================================
-# DISCONNECT
+# CLOSE
 # =========================================================
 
-func disconnect_from_server() -> void:
+func close_connection() -> void:
 
 	if multiplayer.multiplayer_peer:
 
 		multiplayer.multiplayer_peer.close()
 
 	multiplayer.multiplayer_peer = null
+
+	peer = null
+
+	is_host = false
 
 	connected_players.clear()
 	player_spawns.clear()
@@ -183,25 +279,26 @@ func disconnect_from_server() -> void:
 	foods.clear()
 	loot.clear()
 
-	is_server = false
 
-	disconnected.emit()
+# =========================================================
+# PLAYER COUNT
+# =========================================================
+
+func get_player_count() -> int:
+
+	if multiplayer.multiplayer_peer == null:
+		return 0
+
+	return multiplayer.get_peers().size() + 1
 
 
 # =========================================================
 # PEER CONNECTED
 # =========================================================
 
-func _on_peer_connected(
-	peer_id: int
-) -> void:
+func _on_peer_connected(peer_id: int) -> void:
 
-	print(
-		"Peer connected: ",
-		peer_id
-	)
-
-	if not is_server:
+	if not is_host:
 		return
 
 	var spawn := _generate_spawn_position()
@@ -210,53 +307,73 @@ func _on_peer_connected(
 
 	connected_players[peer_id] = {
 		"name": "لاعب",
-		"spawn": spawn,
-		"alive": true
+		"spawn": spawn
 	}
 
 	player_states[peer_id] = {
 		"position": spawn,
 		"direction": Vector2.RIGHT,
 		"length": 10,
-		"alive": true
+		"alive": true,
+		"body": []
 	}
 
-	# إرسال قائمة اللاعبين
-	sync_player_list.rpc_id(
-		peer_id,
-		connected_players
-	)
+	player_connected.emit(peer_id)
 
-	# إرسال Spawn
+	# Tell new player about existing players
+	for existing_id in connected_players.keys():
+
+		if existing_id == peer_id:
+			continue
+
+		var data: Dictionary = connected_players[existing_id]
+
+		player_joined.rpc_id(
+			peer_id,
+			existing_id,
+			str(data.get("name", "لاعب")),
+			data.get("spawn", Vector2.ZERO)
+		)
+
+	# Send current food
+	for food_id in foods.keys():
+
+		var food_data: Dictionary = foods[food_id]
+
+		food_spawned.rpc_id(
+			peer_id,
+			food_id,
+			food_data["position"],
+			food_data["value"],
+			food_data["coins"],
+			food_data["xp"]
+		)
+
+	# Send current loot
+	for loot_id in loot.keys():
+
+		var loot_data: Dictionary = loot[loot_id]
+
+		loot_spawned.rpc_id(
+			peer_id,
+			loot_id,
+			loot_data["position"],
+			loot_data["value"],
+			loot_data["coins"],
+			loot_data["xp"]
+		)
+
+	# Send spawn to new player
 	assign_spawn.rpc_id(
 		peer_id,
 		spawn
 	)
 
-	# إرسال الطعام الحالي
-	sync_food.rpc_id(
+	# Tell everyone
+	player_joined.rpc(
 		peer_id,
-		foods
-	)
-
-	# إرسال الـLoot الحالي
-	sync_loot.rpc_id(
-		peer_id,
-		loot
-	)
-
-	var data: Dictionary = connected_players[
-		peer_id
-	]
-
-	player_joined.emit(
-		peer_id,
-		data
-	)
-
-	_broadcast_player_joined(
-		peer_id,
-		data
+		"لاعب",
+		spawn
 	)
 
 
@@ -264,81 +381,44 @@ func _on_peer_connected(
 # PEER DISCONNECTED
 # =========================================================
 
-func _on_peer_disconnected(
-	peer_id: int
-) -> void:
-
-	print(
-		"Peer disconnected: ",
-		peer_id
-	)
+func _on_peer_disconnected(peer_id: int) -> void:
 
 	connected_players.erase(peer_id)
 	player_spawns.erase(peer_id)
 	player_states.erase(peer_id)
 
-	player_left.emit(peer_id)
+	player_disconnected.emit(peer_id)
 
-	if is_server:
+	if is_host:
 
-		broadcast_player_left.rpc(
+		player_left.rpc(
 			peer_id
 		)
 
+		player_left.emit(peer_id)
+
 
 # =========================================================
-# PLAYER JOIN
+# CONNECTED
 # =========================================================
 
-@rpc("authority", "call_remote", "reliable")
-func broadcast_player_joined(
-	peer_id: int,
-	player_data: Dictionary
-) -> void:
+func _on_connected_to_server() -> void:
 
-	connected_players[peer_id] = player_data
+	connected_to_server.emit()
 
-	player_joined.emit(
-		peer_id,
-		player_data
+	register_player.rpc_id(
+		1,
+		Global.player_name
 	)
 
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
-		"_on_player_joined"
-	):
-
-		scene._on_player_joined(
-			peer_id,
-			player_data
-		)
-
 
 # =========================================================
-# PLAYER LEFT
+# CONNECTION FAILED
 # =========================================================
 
-@rpc("authority", "call_remote", "reliable")
-func broadcast_player_left(
-	peer_id: int
-) -> void:
+func _on_connection_failed() -> void:
 
-	connected_players.erase(peer_id)
-	player_spawns.erase(peer_id)
-	player_states.erase(peer_id)
-
-	player_left.emit(peer_id)
-
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
-		"remote_player_left"
-	):
-
-		scene.remote_player_left(
-			peer_id
-		)
+	connection_failed.emit()
 
 
 # =========================================================
@@ -346,26 +426,20 @@ func broadcast_player_left(
 # =========================================================
 
 @rpc("any_peer", "reliable")
-func register_player(
-	player_name: String
-) -> void:
+func register_player(new_name: String) -> void:
 
-	if not is_server:
+	if not multiplayer.is_server():
 		return
 
-	var sender_id := (
-		multiplayer.get_remote_sender_id()
-	)
+	var sender_id := multiplayer.get_remote_sender_id()
 
-	if sender_id == 0:
-		sender_id = multiplayer.get_unique_id()
+	var safe_name := new_name.strip_edges()
 
-	player_name = player_name.strip_edges()
+	if safe_name.is_empty():
+		safe_name = "لاعب"
 
-	if player_name.is_empty():
-		player_name = "لاعب"
-
-	player_name = player_name.left(18)
+	if safe_name.length() > 18:
+		safe_name = safe_name.substr(0, 18)
 
 	if not connected_players.has(sender_id):
 
@@ -374,79 +448,153 @@ func register_player(
 		player_spawns[sender_id] = spawn
 
 		connected_players[sender_id] = {
-			"name": player_name,
-			"spawn": spawn,
-			"alive": true
+			"name": safe_name,
+			"spawn": spawn
 		}
 
 		player_states[sender_id] = {
 			"position": spawn,
 			"direction": Vector2.RIGHT,
 			"length": 10,
-			"alive": true
+			"alive": true,
+			"body": []
 		}
 
 	else:
 
-		connected_players[
-			sender_id
-		]["name"] = player_name
+		connected_players[sender_id]["name"] = safe_name
 
-	var data: Dictionary = connected_players[
-		sender_id
-	]
-
-	sync_player_list.rpc(
-		connected_players
-	)
-
-	assign_spawn.rpc_id(
+	player_name_updated.rpc(
 		sender_id,
-		player_spawns[sender_id]
+		safe_name
 	)
 
-	_broadcast_player_joined(
-		sender_id,
-		data
-	)
+	_send_full_player_list()
 
 
 # =========================================================
-# SYNC PLAYER LIST
+# PLAYER NAME UPDATE
 # =========================================================
 
-@rpc("authority", "call_local", "reliable")
-func sync_player_list(
-	players: Dictionary
+@rpc("authority", "call_remote", "reliable")
+func player_name_updated(
+	peer_id: int,
+	new_name: String
 ) -> void:
 
-	connected_players = players.duplicate(
-		true
-	)
+	var game := get_tree().current_scene
 
-	for key in players.keys():
+	if game and game.has_method("update_remote_player_name"):
 
-		var peer_id := int(key)
-
-		if players[key].has("spawn"):
-
-			player_spawns[peer_id] = (
-				players[key]["spawn"]
-			)
-
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
-		"sync_network_players"
-	):
-
-		scene.sync_network_players(
-			connected_players
+		game.update_remote_player_name(
+			peer_id,
+			new_name
 		)
 
 
 # =========================================================
-# ASSIGN SPAWN
+# FULL PLAYER LIST
+# =========================================================
+
+func _send_full_player_list() -> void:
+
+	if not is_host:
+		return
+
+	var result: Dictionary = {}
+
+	for id in connected_players.keys():
+
+		var data: Dictionary = connected_players[id]
+
+		result[id] = {
+			"name": data.get("name", "لاعب"),
+			"spawn": data.get(
+				"spawn",
+				Vector2.ZERO
+			)
+		}
+
+	network_players_synced.rpc(
+		result
+	)
+
+
+@rpc("authority", "call_remote", "reliable")
+func network_players_synced(
+	players: Dictionary
+) -> void:
+
+	network_players_synced.emit(
+		players
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"sync_network_players"
+	):
+
+		game.sync_network_players(
+			players
+		)
+
+
+# =========================================================
+# PLAYER JOINED RPC
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func player_joined(
+	peer_id: int,
+	new_name: String,
+	spawn_position: Vector2
+) -> void:
+
+	player_joined.emit(
+		peer_id,
+		new_name
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"network_player_joined"
+	):
+
+		game.network_player_joined(
+			peer_id,
+			new_name,
+			spawn_position
+		)
+
+
+# =========================================================
+# PLAYER LEFT RPC
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func player_left(
+	peer_id: int
+) -> void:
+
+	player_left.emit(
+		peer_id
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"remote_player_left"
+	):
+
+		game.remote_player_left(
+			peer_id
+		)
+
+
+# =========================================================
+# SPAWN
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
@@ -454,196 +602,253 @@ func assign_spawn(
 	spawn_position: Vector2
 ) -> void:
 
-	var local_id := multiplayer.get_unique_id()
+	player_spawns[
+		multiplayer.get_unique_id()
+	] = spawn_position
 
-	player_spawns[local_id] = spawn_position
+	var game := get_tree().current_scene
 
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
+	if game and game.has_method(
 		"set_local_spawn"
 	):
 
-		scene.set_local_spawn(
+		game.set_local_spawn(
 			spawn_position
 		)
 
 
 # =========================================================
-# PLAYER JOIN BROADCAST
+# GENERATE SPAWN
 # =========================================================
 
-func _broadcast_player_joined(
-	peer_id: int,
-	player_data: Dictionary
-) -> void:
+func _generate_spawn_position() -> Vector2:
 
-	if not is_server:
-		return
+	var best_position := MAP_SIZE / 2.0
 
-	broadcast_player_joined.rpc(
-		peer_id,
-		player_data
-	)
+	for attempt in range(30):
+
+		var candidate := Vector2(
+			randf_range(
+				SPAWN_MARGIN,
+				MAP_SIZE.x - SPAWN_MARGIN
+			),
+			randf_range(
+				SPAWN_MARGIN,
+				MAP_SIZE.y - SPAWN_MARGIN
+			)
+		)
+
+		var valid := true
+
+		for existing_spawn in player_spawns.values():
+
+			if candidate.distance_to(
+				existing_spawn
+			) < MIN_SPAWN_DISTANCE:
+
+				valid = false
+				break
+
+		if valid:
+
+			best_position = candidate
+			break
+
+	return best_position
 
 
 # =========================================================
 # PLAYER STATE
 # =========================================================
 
-@rpc("any_peer", "unreliable_ordered")
-func receive_player_state(
-	player_position: Vector2,
-	player_direction: Vector2,
-	player_length: int,
-	player_alive: bool
-) -> void:
-
-	if not is_server:
-		return
-
-	var sender_id := (
-		multiplayer.get_remote_sender_id()
-	)
-
-	if sender_id == 0:
-		sender_id = multiplayer.get_unique_id()
-
-	player_length = clamp(
-		player_length,
-		5,
-		10000
-	)
-
-	player_position.x = clamp(
-		player_position.x,
-		0.0,
-		MAP_SIZE.x
-	)
-
-	player_position.y = clamp(
-		player_position.y,
-		0.0,
-		MAP_SIZE.y
-	)
-
-	player_states[sender_id] = {
-		"position": player_position,
-		"direction": player_direction,
-		"length": player_length,
-		"alive": player_alive
-	}
-
-	if connected_players.has(sender_id):
-
-		connected_players[
-			sender_id
-		]["alive"] = player_alive
-
-	_check_server_collisions()
-
-	_check_food_collection_for_player(
-		sender_id
-	)
-
-	_check_loot_collection_for_player(
-		sender_id
-	)
-
-	update_remote_player.rpc(
-		sender_id,
-		player_position,
-		player_direction,
-		player_length,
-		player_alive
-	)
-
-
-# =========================================================
-# LOCAL PLAYER STATE
-# =========================================================
-
 func broadcast_player_state(
 	player_position: Vector2,
 	player_direction: Vector2,
 	player_length: int,
-	player_alive: bool
+	player_alive: bool,
+	player_body: Array = []
 ) -> void:
 
-	if not multiplayer.has_multiplayer_peer():
+	if multiplayer.multiplayer_peer == null:
 		return
 
-	if is_server:
+	var safe_body: Array = []
 
-		var local_id := multiplayer.get_unique_id()
+	var count := min(
+		player_body.size(),
+		MAX_BODY_POINTS
+	)
 
-		player_states[local_id] = {
-			"position": player_position,
-			"direction": player_direction,
-			"length": player_length,
-			"alive": player_alive
-		}
+	for i in range(count):
 
-		_check_server_collisions()
+		if player_body[i] is Vector2:
 
-		_check_food_collection_for_player(
-			local_id
-		)
+			safe_body.append(
+				player_body[i]
+			)
 
-		_check_loot_collection_for_player(
-			local_id
-		)
+	if multiplayer.is_server():
 
-		update_remote_player.rpc(
-			local_id,
+		_receive_player_state(
+			multiplayer.get_unique_id(),
 			player_position,
 			player_direction,
 			player_length,
-			player_alive
+			player_alive,
+			safe_body
 		)
 
 	else:
 
-		receive_player_state.rpc(
+		send_player_state.rpc_id(
+			1,
 			player_position,
 			player_direction,
 			player_length,
-			player_alive
+			player_alive,
+			safe_body
 		)
 
 
 # =========================================================
-# UPDATE REMOTE PLAYER
+# STATE RPC
 # =========================================================
 
-@rpc("authority", "call_remote", "unreliable_ordered")
-func update_remote_player(
+@rpc("any_peer", "unreliable")
+func send_player_state(
+	player_position: Vector2,
+	player_direction: Vector2,
+	player_length: int,
+	player_alive: bool,
+	player_body: Array
+) -> void:
+
+	if not multiplayer.is_server():
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	_receive_player_state(
+		sender_id,
+		player_position,
+		player_direction,
+		player_length,
+		player_alive,
+		player_body
+	)
+
+
+# =========================================================
+# RECEIVE STATE ON SERVER
+# =========================================================
+
+func _receive_player_state(
 	peer_id: int,
 	player_position: Vector2,
 	player_direction: Vector2,
 	player_length: int,
-	player_alive: bool
+	player_alive: bool,
+	player_body: Array
 ) -> void:
+
+	if not player_states.has(peer_id):
+		return
+
+	# Keep player inside map
+	player_position.x = clamp(
+		player_position.x,
+		20.0,
+		MAP_SIZE.x - 20.0
+	)
+
+	player_position.y = clamp(
+		player_position.y,
+		20.0,
+		MAP_SIZE.y - 20.0
+	)
+
+	var safe_length := clamp(
+		player_length,
+		5,
+		5000
+	)
+
+	var safe_body: Array = []
+
+	var body_count := min(
+		player_body.size(),
+		MAX_BODY_POINTS
+	)
+
+	for i in range(body_count):
+
+		if player_body[i] is Vector2:
+
+			var body_point: Vector2 = player_body[i]
+
+			body_point.x = clamp(
+				body_point.x,
+				0.0,
+				MAP_SIZE.x
+			)
+
+			body_point.y = clamp(
+				body_point.y,
+				0.0,
+				MAP_SIZE.y
+			)
+
+			safe_body.append(
+				body_point
+			)
 
 	player_states[peer_id] = {
 		"position": player_position,
 		"direction": player_direction,
-		"length": player_length,
-		"alive": player_alive
+		"length": safe_length,
+		"alive": player_alive,
+		"body": safe_body
 	}
 
-	var scene := get_tree().current_scene
+	receive_player_state.rpc(
+		peer_id,
+		player_position,
+		player_direction,
+		safe_length,
+		player_alive,
+		safe_body
+	)
 
-	if scene and scene.has_method(
+	_check_server_collisions()
+
+
+# =========================================================
+# RECEIVE STATE CLIENT
+# =========================================================
+
+@rpc("authority", "call_remote", "unreliable")
+func receive_player_state(
+	peer_id: int,
+	player_position: Vector2,
+	player_direction: Vector2,
+	player_length: int,
+	player_alive: bool,
+	player_body: Array
+) -> void:
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
 		"update_remote_player"
 	):
 
-		scene.update_remote_player(
+		game.update_remote_player(
 			peer_id,
 			player_position,
 			player_direction,
 			player_length,
-			player_alive
+			player_alive,
+			player_body
 		)
 
 
@@ -653,33 +858,27 @@ func update_remote_player(
 
 func _check_server_collisions() -> void:
 
-	if not is_server:
+	if not multiplayer.is_server():
 		return
-
-	var now := Time.get_ticks_msec() / 1000.0
-
-	if now - last_collision_check < 0.08:
-		return
-
-	last_collision_check = now
 
 	var ids := player_states.keys()
 
+	var victims: Dictionary = {}
+
 	for i in range(ids.size()):
 
-		var first_id := int(ids[i])
+		var id_a = ids[i]
 
-		if not player_states.has(first_id):
+		if not player_states.has(id_a):
 			continue
 
-		var first_state: Dictionary = (
-			player_states[first_id]
-		)
+		var state_a: Dictionary = player_states[id_a]
 
-		if not first_state.get(
+		if not state_a.get(
 			"alive",
 			true
 		):
+
 			continue
 
 		for j in range(
@@ -687,115 +886,156 @@ func _check_server_collisions() -> void:
 			ids.size()
 		):
 
-			var second_id := int(ids[j])
+			var id_b = ids[j]
 
-			if not player_states.has(
-				second_id
-			):
+			if not player_states.has(id_b):
 				continue
 
-			var second_state: Dictionary = (
-				player_states[second_id]
-			)
+			var state_b: Dictionary = player_states[id_b]
 
-			if not second_state.get(
+			if not state_b.get(
 				"alive",
 				true
 			):
+
 				continue
 
-			_check_snake_pair(
-				first_id,
-				first_state,
-				second_id,
-				second_state
+			_check_player_pair(
+				id_a,
+				state_a,
+				id_b,
+				state_b,
+				victims
 			)
 
+	for victim_id in victims.keys():
+
+		if not player_states.has(
+			victim_id
+		):
+
+			continue
+
+		var killer_id: int = victims[
+			victim_id
+		]
+
+		_kill_player(
+			victim_id,
+			killer_id
+		)
+
 
 # =========================================================
-# CHECK SNAKE PAIR
+# CHECK TWO PLAYERS
 # =========================================================
 
-func _check_snake_pair(
-	first_id: int,
-	first_state: Dictionary,
-	second_id: int,
-	second_state: Dictionary
+func _check_player_pair(
+	id_a: int,
+	state_a: Dictionary,
+	id_b: int,
+	state_b: Dictionary,
+	victims: Dictionary
 ) -> void:
 
-	var first_position: Vector2 = (
-		first_state["position"]
-	)
+	var position_a: Vector2 = state_a[
+		"position"
+	]
 
-	var second_position: Vector2 = (
-		second_state["position"]
-	)
+	var position_b: Vector2 = state_b[
+		"position"
+	]
 
-	var distance := first_position.distance_to(
-		second_position
-	)
+	# -----------------------------------------------------
+	# HEAD VS HEAD
+	# -----------------------------------------------------
 
-	if distance <= HEAD_TO_HEAD_DISTANCE:
+	if position_a.distance_to(
+		position_b
+	) <= HEAD_TO_HEAD_DISTANCE:
 
-		var first_length := int(
-			first_state["length"]
+		var length_a := int(
+			state_a.get("length", 10)
 		)
 
-		var second_length := int(
-			second_state["length"]
+		var length_b := int(
+			state_b.get("length", 10)
 		)
 
-		if first_length > second_length:
+		# Bigger snake survives head-to-head.
+		if length_a > length_b:
 
-			_kill_player(
-				second_id,
-				first_id
-			)
+			victims[id_b] = id_a
 
-		elif second_length > first_length:
+		elif length_b > length_a:
 
-			_kill_player(
-				first_id,
-				second_id
-			)
+			victims[id_a] = id_b
 
 		else:
 
-			_kill_player(
-				first_id,
-				second_id
-			)
-
-			_kill_player(
-				second_id,
-				first_id
-			)
+			# Same size = both die
+			victims[id_a] = id_b
+			victims[id_b] = id_a
 
 		return
 
-	if distance <= COLLISION_DISTANCE:
+	# -----------------------------------------------------
+	# HEAD A VS BODY B
+	# -----------------------------------------------------
 
-		var first_length := int(
-			first_state["length"]
-		)
+	if _head_hits_body(
+		position_a,
+		state_b.get("body", [])
+	):
 
-		var second_length := int(
-			second_state["length"]
-		)
+		victims[id_a] = id_b
 
-		if first_length >= second_length:
+	# -----------------------------------------------------
+	# HEAD B VS BODY A
+	# -----------------------------------------------------
 
-			_kill_player(
-				second_id,
-				first_id
-			)
+	if _head_hits_body(
+		position_b,
+		state_a.get("body", [])
+	):
 
-		else:
+		victims[id_b] = id_a
 
-			_kill_player(
-				first_id,
-				second_id
-			)
+
+# =========================================================
+# HEAD VS BODY
+# =========================================================
+
+func _head_hits_body(
+	head_position: Vector2,
+	body_points: Array
+) -> bool:
+
+	if body_points.is_empty():
+		return false
+
+	var start_index := min(
+		COLLISION_START_INDEX,
+		body_points.size()
+	)
+
+	for i in range(
+		start_index,
+		body_points.size()
+	):
+
+		if not body_points[i] is Vector2:
+			continue
+
+		var body_position: Vector2 = body_points[i]
+
+		if head_position.distance_to(
+			body_position
+		) <= HEAD_TO_BODY_DISTANCE:
+
+			return true
+
+	return false
 
 
 # =========================================================
@@ -807,45 +1047,41 @@ func _kill_player(
 	killer_id: int
 ) -> void:
 
-	if not is_server:
+	if not player_states.has(
+		victim_id
+	):
+
 		return
 
-	if not player_states.has(victim_id):
-		return
+	var victim_state: Dictionary = player_states[
+		victim_id
+	]
 
-	if not player_states[victim_id].get(
+	if not victim_state.get(
 		"alive",
 		true
 	):
+
 		return
 
-	var death_position: Vector2 = (
-		player_states[victim_id]["position"]
-	)
+	var death_position: Vector2 = victim_state[
+		"position"
+	]
 
-	var victim_length := int(
-		player_states[victim_id]["length"]
-	)
+	var reward := 250
 
-	player_states[victim_id]["alive"] = false
+	# Mark dead
+	victim_state["alive"] = false
 
-	if connected_players.has(victim_id):
+	player_states[victim_id] = victim_state
 
-		connected_players[
-			victim_id
-		]["alive"] = false
-
-	# إنشاء Loot
+	# Spawn loot
 	_spawn_death_loot(
 		death_position,
-		victim_length
+		victim_state
 	)
 
-	var reward := max(
-		10,
-		victim_length * 2
-	)
-
+	# Tell everyone
 	player_died.rpc(
 		victim_id,
 		killer_id,
@@ -853,83 +1089,195 @@ func _kill_player(
 		reward
 	)
 
-	update_remote_player.rpc(
-		victim_id,
-		death_position,
-		Vector2.RIGHT,
-		victim_length,
-		false
-	)
+	# Update local server game
+	var game := get_tree().current_scene
 
-	print(
-		"Player ",
-		victim_id,
-		" killed by ",
-		killer_id
-	)
-
-
-# =========================================================
-# PLAYER DIED
-# =========================================================
-
-@rpc("authority", "call_remote", "reliable")
-func player_died(
-	victim_id: int,
-	killer_id: int,
-	death_position: Vector2,
-	reward: int
-) -> void:
-
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
+	if game and game.has_method(
 		"network_player_died"
 	):
 
-		scene.network_player_died(
+		game.network_player_died(
 			victim_id,
 			killer_id,
 			death_position,
 			reward
 		)
 
-	elif scene and scene.has_method(
-		"remote_player_died"
+
+# =========================================================
+# PLAYER DIED RPC
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func player_died(
+	peer_id: int,
+	killer_id: int,
+	death_position: Vector2,
+	reward: int
+) -> void:
+
+	player_died.emit(
+		peer_id,
+		killer_id,
+		death_position,
+		reward
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"network_player_died"
 	):
 
-		scene.remote_player_died(
-			victim_id
+		game.network_player_died(
+			peer_id,
+			killer_id,
+			death_position,
+			reward
 		)
 
 
 # =========================================================
-# INITIAL FOOD
+# REQUEST RESPAWN
+# =========================================================
+
+func request_respawn() -> void:
+
+	if multiplayer.multiplayer_peer == null:
+		return
+
+	if multiplayer.is_server():
+
+		_respawn_player(
+			multiplayer.get_unique_id()
+		)
+
+	else:
+
+		request_respawn_rpc.rpc_id(
+			1
+		)
+
+
+@rpc("any_peer", "reliable")
+func request_respawn_rpc() -> void:
+
+	if not multiplayer.is_server():
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	_respawn_player(
+		sender_id
+	)
+
+
+# =========================================================
+# RESPAWN
+# =========================================================
+
+func _respawn_player(
+	peer_id: int
+) -> void:
+
+	if not player_states.has(
+		peer_id
+	):
+
+		return
+
+	var spawn := _generate_spawn_position()
+
+	player_spawns[peer_id] = spawn
+
+	var state: Dictionary = player_states[
+		peer_id
+	]
+
+	state["position"] = spawn
+	state["direction"] = Vector2.RIGHT
+	state["length"] = 10
+	state["alive"] = true
+	state["body"] = []
+
+	player_states[peer_id] = state
+
+	player_respawned.rpc(
+		peer_id,
+		spawn
+	)
+
+	var game := get_tree().current_scene
+
+	if game and peer_id == multiplayer.get_unique_id():
+
+		if game.has_method(
+			"set_local_spawn"
+		):
+
+			game.set_local_spawn(
+				spawn
+			)
+
+
+# =========================================================
+# RESPAWN RPC
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func player_respawned(
+	peer_id: int,
+	respawn_position: Vector2
+) -> void:
+
+	player_respawned.emit(
+		peer_id,
+		respawn_position
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"network_player_respawned"
+	):
+
+		game.network_player_respawned(
+			peer_id,
+			respawn_position
+		)
+
+
+# =========================================================
+# FOOD INITIALIZATION
 # =========================================================
 
 func _create_initial_food() -> void:
 
-	if not is_server:
+	if not is_host:
 		return
 
 	foods.clear()
 
-	for i in range(FOOD_COUNT):
+	next_food_id = 1
 
-		var position := _generate_food_position()
+	for i in range(
+		FOOD_COUNT
+	):
 
-		_add_food(
-			position
-		)
+		_create_food()
 
 
 # =========================================================
-# GENERATE FOOD POSITION
+# CREATE FOOD
 # =========================================================
 
-func _generate_food_position() -> Vector2:
+func _create_food() -> void:
 
-	return Vector2(
+	var food_id := next_food_id
+
+	next_food_id += 1
+
+	var position := Vector2(
 		randf_range(
 			100.0,
 			MAP_SIZE.x - 100.0
@@ -940,19 +1288,6 @@ func _generate_food_position() -> Vector2:
 		)
 	)
 
-
-# =========================================================
-# ADD FOOD
-# =========================================================
-
-func _add_food(
-	position: Vector2
-) -> int:
-
-	var food_id := next_food_id
-
-	next_food_id += 1
-
 	foods[food_id] = {
 		"position": position,
 		"value": FOOD_VALUE,
@@ -960,106 +1295,119 @@ func _add_food(
 		"xp": FOOD_XP_VALUE
 	}
 
-	return food_id
+	food_spawned.rpc(
+		food_id,
+		position,
+		FOOD_VALUE,
+		FOOD_COIN_VALUE,
+		FOOD_XP_VALUE
+	)
 
 
 # =========================================================
-# SYNC FOOD
+# MAINTAIN FOOD
+# =========================================================
+
+func _maintain_food() -> void:
+
+	if not is_host:
+		return
+
+	while foods.size() < FOOD_COUNT:
+
+		_create_food()
+
+		if foods.size() >= FOOD_COUNT:
+			break
+
+
+# =========================================================
+# FOOD SPAWNED
 # =========================================================
 
 @rpc("authority", "call_remote", "reliable")
-func sync_food(
-	server_foods: Dictionary
+func food_spawned(
+	food_id: int,
+	position: Vector2,
+	value: int,
+	coins: int,
+	xp: int
 ) -> void:
 
-	foods = server_foods.duplicate(
-		true
-	)
+	var data := {
+		"position": position,
+		"value": value,
+		"coins": coins,
+		"xp": xp
+	}
 
-	var scene := get_tree().current_scene
+	foods[food_id] = data
 
-	if scene and scene.has_method(
-		"sync_network_food"
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"network_food_spawned"
 	):
 
-		scene.sync_network_food(
-			foods
+		game.network_food_spawned(
+			food_id,
+			position,
+			value,
+			coins,
+			xp
 		)
 
 
 # =========================================================
-# FOOD COLLECT REQUEST
-# =========================================================
-
-@rpc("any_peer", "reliable")
-func request_collect_food(
-	food_id: int
-) -> void:
-
-	if not is_server:
-		return
-
-	var sender_id := (
-		multiplayer.get_remote_sender_id()
-	)
-
-	if sender_id == 0:
-		sender_id = multiplayer.get_unique_id()
-
-	_collect_food_for_player(
-		sender_id,
-		food_id
-	)
-
-
-# =========================================================
-# SERVER FOOD COLLECTION
+# FOOD COLLECTION CHECK
 # =========================================================
 
 func _check_food_collection_for_player(
 	peer_id: int
 ) -> void:
 
-	if not is_server:
+	if not player_states.has(
+		peer_id
+	):
+
 		return
 
-	if not player_states.has(peer_id):
-		return
+	var state: Dictionary = player_states[
+		peer_id
+	]
 
-	if not player_states[peer_id].get(
+	if not state.get(
 		"alive",
 		true
 	):
+
 		return
 
-	var player_position: Vector2 = (
-		player_states[peer_id]["position"]
-	)
+	var player_position: Vector2 = state[
+		"position"
+	]
 
-	var collected_ids: Array[int] = []
+	var collected: Array = []
 
-	for key in foods.keys():
+	for food_id in foods.keys():
 
-		var food_id := int(key)
+		var food_data: Dictionary = foods[
+			food_id
+		]
 
-		var food_data: Dictionary = foods[key]
-
-		var food_position: Vector2 = (
-			food_data["position"]
-		)
+		var food_position: Vector2 = food_data[
+			"position"
+		]
 
 		if player_position.distance_to(
 			food_position
-		) <= 48.0:
+		) <= FOOD_COLLECTION_DISTANCE:
 
-			collected_ids.append(
+			collected.append(
 				food_id
 			)
 
-			if collected_ids.size() >= 3:
-				break
-
-	for food_id in collected_ids:
+	for food_id in collected:
 
 		_collect_food_for_player(
 			peer_id,
@@ -1076,78 +1424,36 @@ func _collect_food_for_player(
 	food_id: int
 ) -> void:
 
-	if not is_server:
-		return
-
-	if not foods.has(food_id):
-		return
-
-	if not player_states.has(peer_id):
-		return
-
-	if not player_states[peer_id].get(
-		"alive",
-		true
+	if not foods.has(
+		food_id
 	):
+
+		return
+
+	if not player_states.has(
+		peer_id
+	):
+
 		return
 
 	var food_data: Dictionary = foods[
 		food_id
 	]
 
-	var player_position: Vector2 = (
-		player_states[peer_id]["position"]
+	foods.erase(
+		food_id
 	)
 
-	var food_position: Vector2 = (
-		food_data["position"]
-	)
-
-	if player_position.distance_to(
-		food_position
-	) > 60.0:
-		return
-
-	foods.erase(food_id)
-
-	# زيادة طول اللاعب
-	var old_length := int(
-		player_states[peer_id]["length"]
-	)
-
-	var new_length := old_length + 1
-
-	player_states[peer_id]["length"] = (
-		new_length
-	)
-
-	# إرسال نتيجة الجمع للجميع
 	food_collected.rpc(
 		food_id,
 		peer_id,
-		food_position,
-		new_length,
-		int(food_data["value"]),
-		int(food_data["coins"]),
-		int(food_data["xp"])
+		food_data["value"],
+		food_data["coins"],
+		food_data["xp"]
 	)
 
-	# تعويض الطعام المحذوف
-	var new_food_position := (
-		_generate_food_position()
-	)
-
-	var new_food_id := _add_food(
-		new_food_position
-	)
-
-	food_spawned.rpc(
-		new_food_id,
-		new_food_position,
-		FOOD_VALUE,
-		FOOD_COIN_VALUE,
-		FOOD_XP_VALUE
-	)
+	# Create replacement
+	_create_food()
 
 
 # =========================================================
@@ -1158,26 +1464,24 @@ func _collect_food_for_player(
 func food_collected(
 	food_id: int,
 	collector_id: int,
-	position: Vector2,
-	new_length: int,
 	value: int,
 	coins: int,
 	xp: int
 ) -> void:
 
-	foods.erase(food_id)
+	foods.erase(
+		food_id
+	)
 
-	var scene := get_tree().current_scene
+	var game := get_tree().current_scene
 
-	if scene and scene.has_method(
+	if game and game.has_method(
 		"network_food_collected"
 	):
 
-		scene.network_food_collected(
+		game.network_food_collected(
 			food_id,
 			collector_id,
-			position,
-			new_length,
 			value,
 			coins,
 			xp
@@ -1185,73 +1489,46 @@ func food_collected(
 
 
 # =========================================================
-# FOOD SPAWNED
-# =========================================================
-
-@rpc("authority", "call_remote", "reliable")
-func food_spawned(
-	food_id: int,
-	position: Vector2,
-	value: int,
-	coins: int,
-	xp: int
-) -> void:
-
-	foods[food_id] = {
-		"position": position,
-		"value": value,
-		"coins": coins,
-		"xp": xp
-	}
-
-	var scene := get_tree().current_scene
-
-	if scene and scene.has_method(
-		"network_food_spawned"
-	):
-
-		scene.network_food_spawned(
-			food_id,
-			position,
-			value,
-			coins,
-			xp
-		)
-
-
-# =========================================================
-# DEATH LOOT
+# LOOT FROM DEATH
 # =========================================================
 
 func _spawn_death_loot(
 	death_position: Vector2,
-	victim_length: int
+	victim_state: Dictionary
 ) -> void:
 
-	if not is_server:
-		return
+	var amount := DEATH_LOOT_COUNT
 
-	var amount := clamp(
-		victim_length * LOOT_PER_LENGTH,
-		5,
-		MAX_LOOT_PER_DEATH
+	var victim_length := int(
+		victim_state.get(
+			"length",
+			10
+		)
+	)
+
+	amount = clamp(
+		amount + int(victim_length / 20),
+		DEATH_LOOT_COUNT,
+		25
 	)
 
 	for i in range(amount):
 
 		var angle := (
-			float(i) / float(amount)
+			float(i) /
+			float(max(1, amount))
 		) * TAU
 
 		var distance := randf_range(
 			20.0,
-			120.0
+			110.0
 		)
 
-		var position := death_position + Vector2(
-			cos(angle),
-			sin(angle)
-		) * distance
+		var position := (
+			death_position +
+			Vector2.from_angle(angle) *
+			distance
+		)
 
 		position.x = clamp(
 			position.x,
@@ -1265,193 +1542,36 @@ func _spawn_death_loot(
 			MAP_SIZE.y - 50.0
 		)
 
-		var loot_id := next_loot_id
-
-		next_loot_id += 1
-
-		loot[loot_id] = {
-			"position": position,
-			"value": LOOT_VALUE,
-			"coins": LOOT_COIN_VALUE,
-			"xp": LOOT_XP_VALUE
-		}
-
-		loot_spawned.rpc(
-			loot_id,
-			position,
-			LOOT_VALUE,
-			LOOT_COIN_VALUE,
-			LOOT_XP_VALUE
+		_create_loot(
+			position
 		)
 
 
 # =========================================================
-# SYNC LOOT
+# CREATE LOOT
 # =========================================================
 
-@rpc("authority", "call_remote", "reliable")
-func sync_loot(
-	server_loot: Dictionary
+func _create_loot(
+	position: Vector2
 ) -> void:
 
-	loot = server_loot.duplicate(
-		true
-	)
+	var loot_id := next_loot_id
 
-	var scene := get_tree().current_scene
+	next_loot_id += 1
 
-	if scene and scene.has_method(
-		"sync_network_loot"
-	):
+	loot[loot_id] = {
+		"position": position,
+		"value": DEATH_LOOT_VALUE,
+		"coins": DEATH_LOOT_COIN_VALUE,
+		"xp": DEATH_LOOT_XP_VALUE
+	}
 
-		scene.sync_network_loot(
-			loot
-		)
-
-
-# =========================================================
-# LOOT COLLECTION CHECK
-# =========================================================
-
-func _check_loot_collection_for_player(
-	peer_id: int
-) -> void:
-
-	if not is_server:
-		return
-
-	if not player_states.has(peer_id):
-		return
-
-	if not player_states[peer_id].get(
-		"alive",
-		true
-	):
-		return
-
-	var player_position: Vector2 = (
-		player_states[peer_id]["position"]
-	)
-
-	var collected_ids: Array[int] = []
-
-	for key in loot.keys():
-
-		var loot_id := int(key)
-
-		var loot_data: Dictionary = loot[
-			loot_id
-		]
-
-		var loot_position: Vector2 = (
-			loot_data["position"]
-		)
-
-		if player_position.distance_to(
-			loot_position
-		) <= 55.0:
-
-			collected_ids.append(
-				loot_id
-			)
-
-			if collected_ids.size() >= 5:
-				break
-
-	for loot_id in collected_ids:
-
-		_collect_loot_for_player(
-			peer_id,
-			loot_id
-		)
-
-
-# =========================================================
-# REQUEST LOOT
-# =========================================================
-
-@rpc("any_peer", "reliable")
-func request_collect_loot(
-	loot_id: int
-) -> void:
-
-	if not is_server:
-		return
-
-	var sender_id := (
-		multiplayer.get_remote_sender_id()
-	)
-
-	if sender_id == 0:
-		sender_id = multiplayer.get_unique_id()
-
-	_collect_loot_for_player(
-		sender_id,
-		loot_id
-	)
-
-
-# =========================================================
-# COLLECT LOOT
-# =========================================================
-
-func _collect_loot_for_player(
-	peer_id: int,
-	loot_id: int
-) -> void:
-
-	if not is_server:
-		return
-
-	if not loot.has(loot_id):
-		return
-
-	if not player_states.has(peer_id):
-		return
-
-	if not player_states[peer_id].get(
-		"alive",
-		true
-	):
-		return
-
-	var loot_data: Dictionary = loot[
-		loot_id
-	]
-
-	var player_position: Vector2 = (
-		player_states[peer_id]["position"]
-	)
-
-	var loot_position: Vector2 = (
-		loot_data["position"]
-	)
-
-	if player_position.distance_to(
-		loot_position
-	) > 70.0:
-		return
-
-	loot.erase(loot_id)
-
-	var old_length := int(
-		player_states[peer_id]["length"]
-	)
-
-	var new_length := old_length + 2
-
-	player_states[peer_id]["length"] = (
-		new_length
-	)
-
-	loot_collected.rpc(
+	loot_spawned.rpc(
 		loot_id,
-		peer_id,
-		loot_position,
-		new_length,
-		int(loot_data["value"]),
-		int(loot_data["coins"]),
-		int(loot_data["xp"])
+		position,
+		DEATH_LOOT_VALUE,
+		DEATH_LOOT_COIN_VALUE,
+		DEATH_LOOT_XP_VALUE
 	)
 
 
@@ -1475,19 +1595,162 @@ func loot_spawned(
 		"xp": xp
 	}
 
-	var scene := get_tree().current_scene
+	var game := get_tree().current_scene
 
-	if scene and scene.has_method(
+	if game and game.has_method(
 		"network_loot_spawned"
 	):
 
-		scene.network_loot_spawned(
+		game.network_loot_spawned(
 			loot_id,
 			position,
 			value,
 			coins,
 			xp
 		)
+
+
+# =========================================================
+# LOOT CLEANUP
+# =========================================================
+
+func _cleanup_loot() -> void:
+
+	if not is_host:
+		return
+
+	if loot.size() <= 150:
+		return
+
+	var remove_count := loot.size() - 150
+
+	for loot_id in loot.keys():
+
+		loot.erase(
+			loot_id
+		)
+
+		loot_removed.rpc(
+			loot_id
+		)
+
+		remove_count -= 1
+
+		if remove_count <= 0:
+			break
+
+
+# =========================================================
+# LOOT REMOVED
+# =========================================================
+
+@rpc("authority", "call_remote", "reliable")
+func loot_removed(
+	loot_id: int
+) -> void:
+
+	loot.erase(
+		loot_id
+	)
+
+	var game := get_tree().current_scene
+
+	if game and game.has_method(
+		"network_loot_removed"
+	):
+
+		game.network_loot_removed(
+			loot_id
+		)
+
+
+# =========================================================
+# LOOT COLLECTION
+# =========================================================
+
+func _check_loot_collection_for_player(
+	peer_id: int
+) -> void:
+
+	if not player_states.has(
+		peer_id
+	):
+
+		return
+
+	var state: Dictionary = player_states[
+		peer_id
+	]
+
+	if not state.get(
+		"alive",
+		true
+	):
+
+		return
+
+	var player_position: Vector2 = state[
+		"position"
+	]
+
+	var collected: Array = []
+
+	for loot_id in loot.keys():
+
+		var loot_data: Dictionary = loot[
+			loot_id
+		]
+
+		var loot_position: Vector2 = loot_data[
+			"position"
+		]
+
+		if player_position.distance_to(
+			loot_position
+		) <= LOOT_COLLECTION_DISTANCE:
+
+			collected.append(
+				loot_id
+			)
+
+	for loot_id in collected:
+
+		_collect_loot_for_player(
+			peer_id,
+			loot_id
+		)
+
+
+# =========================================================
+# COLLECT LOOT
+# =========================================================
+
+func _collect_loot_for_player(
+	peer_id: int,
+	loot_id: int
+) -> void:
+
+	if not loot.has(
+		loot_id
+	):
+
+		return
+
+	var loot_data: Dictionary = loot[
+		loot_id
+	]
+
+	loot.erase(
+		loot_id
+	)
+
+	loot_collected.rpc(
+		loot_id,
+		peer_id,
+		loot_data["value"],
+		loot_data["coins"],
+		loot_data["xp"]
+	)
 
 
 # =========================================================
@@ -1498,26 +1761,24 @@ func loot_spawned(
 func loot_collected(
 	loot_id: int,
 	collector_id: int,
-	position: Vector2,
-	new_length: int,
 	value: int,
 	coins: int,
 	xp: int
 ) -> void:
 
-	loot.erase(loot_id)
+	loot.erase(
+		loot_id
+	)
 
-	var scene := get_tree().current_scene
+	var game := get_tree().current_scene
 
-	if scene and scene.has_method(
+	if game and game.has_method(
 		"network_loot_collected"
 	):
 
-		scene.network_loot_collected(
+		game.network_loot_collected(
 			loot_id,
 			collector_id,
-			position,
-			new_length,
 			value,
 			coins,
 			xp
@@ -1525,222 +1786,61 @@ func loot_collected(
 
 
 # =========================================================
-# RESPAWN
+# REQUEST FOOD COLLECTION
 # =========================================================
 
-func broadcast_player_respawn(
-	spawn_position: Vector2
+func request_collect_food(
+	food_id: int
 ) -> void:
 
-	if not multiplayer.has_multiplayer_peer():
-		return
+	if multiplayer.is_server():
 
-	if is_server:
+		var id := multiplayer.get_unique_id()
 
-		var local_id := multiplayer.get_unique_id()
-
-		player_states[local_id] = {
-			"position": spawn_position,
-			"direction": Vector2.RIGHT,
-			"length": 10,
-			"alive": true
-		}
-
-		if connected_players.has(local_id):
-
-			connected_players[
-				local_id
-			]["alive"] = true
-
-		player_respawned.rpc(
-			local_id,
-			spawn_position
+		_collect_food_for_player(
+			id,
+			food_id
 		)
 
 	else:
 
-		request_player_respawn.rpc(
-			spawn_position
+		request_collect_food_rpc.rpc_id(
+			1,
+			food_id
 		)
 
-
-# =========================================================
-# REQUEST RESPAWN
-# =========================================================
 
 @rpc("any_peer", "reliable")
-func request_player_respawn(
-	requested_position: Vector2
+func request_collect_food_rpc(
+	food_id: int
 ) -> void:
 
-	if not is_server:
+	if not multiplayer.is_server():
 		return
 
-	var sender_id := (
-		multiplayer.get_remote_sender_id()
-	)
+	var sender_id := multiplayer.get_remote_sender_id()
 
-	var spawn := _generate_spawn_position()
-
-	player_spawns[sender_id] = spawn
-
-	player_states[sender_id] = {
-		"position": spawn,
-		"direction": Vector2.RIGHT,
-		"length": 10,
-		"alive": true
-	}
-
-	if connected_players.has(sender_id):
-
-		connected_players[
-			sender_id
-		]["spawn"] = spawn
-
-		connected_players[
-			sender_id
-		]["alive"] = true
-
-	player_respawned.rpc(
+	_collect_food_for_player(
 		sender_id,
-		spawn
+		food_id
 	)
 
 
 # =========================================================
-# PLAYER RESPAWNED
+# AUTO COLLECTION AFTER STATE
 # =========================================================
 
-@rpc("authority", "call_remote", "reliable")
-func player_respawned(
-	peer_id: int,
-	spawn_position: Vector2
-) -> void:
+func _check_collections() -> void:
 
-	var scene := get_tree().current_scene
+	if not is_host:
+		return
 
-	if scene and scene.has_method(
-		"remote_player_respawned"
-	):
+	for peer_id in player_states.keys():
 
-		scene.remote_player_respawned(
-			peer_id,
-			spawn_position
+		_check_food_collection_for_player(
+			peer_id
 		)
 
-
-# =========================================================
-# SPAWN GENERATOR
-# =========================================================
-
-func _generate_spawn_position() -> Vector2:
-
-	var best_position := Vector2(
-		MAP_SIZE.x / 2.0,
-		MAP_SIZE.y / 2.0
-	)
-
-	var best_distance := -1.0
-
-	for attempt in range(30):
-
-		var candidate := Vector2(
-			randf_range(
-				SPAWN_MARGIN,
-				MAP_SIZE.x - SPAWN_MARGIN
-			),
-			randf_range(
-				SPAWN_MARGIN,
-				MAP_SIZE.y - SPAWN_MARGIN
-			)
+		_check_loot_collection_for_player(
+			peer_id
 		)
-
-		var nearest_distance := INF
-
-		for key in player_spawns.keys():
-
-			var existing_position: Vector2 = (
-				player_spawns[key]
-			)
-
-			var distance := candidate.distance_to(
-				existing_position
-			)
-
-			nearest_distance = min(
-				nearest_distance,
-				distance
-			)
-
-		if player_spawns.is_empty():
-			nearest_distance = INF
-
-		if nearest_distance >= MIN_SPAWN_DISTANCE:
-			return candidate
-
-		if nearest_distance > best_distance:
-
-			best_distance = nearest_distance
-			best_position = candidate
-
-	return best_position
-
-
-# =========================================================
-# GET SPAWN
-# =========================================================
-
-func get_player_spawn(
-	peer_id: int
-) -> Vector2:
-
-	if player_spawns.has(peer_id):
-
-		var value = player_spawns[peer_id]
-
-		if value is Vector2:
-			return value
-
-	return Vector2.ZERO
-
-
-# =========================================================
-# GET PLAYER NAME
-# =========================================================
-
-func get_player_name(
-	peer_id: int
-) -> String:
-
-	if not connected_players.has(peer_id):
-		return "لاعب"
-
-	return str(
-		connected_players[peer_id].get(
-			"name",
-			"لاعب"
-		)
-	)
-
-
-# =========================================================
-# GET PLAYER COUNT
-# =========================================================
-
-func get_player_count() -> int:
-
-	return connected_players.size()
-
-
-# =========================================================
-# LOCAL NAME
-# =========================================================
-
-func _get_local_player_name() -> String:
-
-	if Global:
-
-		if Global.player_name != "":
-			return Global.player_name
-
-	return "لاعب"
