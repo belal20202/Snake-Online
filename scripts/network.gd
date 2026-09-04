@@ -1,234 +1,541 @@
 extends Node
 
+# =========================================================
+# SNAKE ARAB ONLINE
+# NETWORK / ROOMS / MATCHMAKING
+# STEP 6.6.13
+# Godot 4
+# =========================================================
+
 signal connected_to_server
 signal connection_failed
-signal player_connected(peer_id, player_name)
-signal player_disconnected(peer_id)
 
-signal player_joined_signal(peer_id, player_name)
-signal player_left_signal(peer_id)
-signal players_synced_signal(players)
+signal player_connected
+signal player_disconnected
 
-signal player_died_signal(victim_id, killer_id, death_position, reward)
-signal player_respawned_signal(peer_id, spawn_position)
+signal player_joined_signal
+signal player_left_signal
+signal players_synced_signal
 
-signal food_spawned_signal(food_id, position, value)
-signal food_collected_signal(food_id, collector_id, value)
+signal player_died_signal
+signal player_respawned_signal
 
-signal loot_spawned_signal(loot_id, position, coins, xp)
-signal loot_collected_signal(loot_id, collector_id, coins, xp)
+signal food_spawned_signal
+signal food_collected_signal
 
-signal leaderboard_updated_signal(leaderboard)
+signal loot_spawned_signal
+signal loot_collected_signal
+
+signal leaderboard_updated_signal
+
+# =========================================================
+# ROOM SIGNALS
+# =========================================================
+
+signal room_created_signal
+signal room_joined_signal
+signal room_left_signal
+signal room_updated_signal
+signal room_started_signal
+signal room_error_signal
+signal matchmaking_started_signal
+signal matchmaking_stopped_signal
+
+# =========================================================
+# SETTINGS
+# =========================================================
 
 const PORT := 7777
+
 const MAX_PLAYERS := 20
 
-const MAP_SIZE := Vector2(4000, 4000)
+const MAP_SIZE := Vector2(
+	4000.0,
+	4000.0
+)
+
 const SPAWN_MARGIN := 350.0
+
 const MIN_SPAWN_DISTANCE := 500.0
 
 const INITIAL_LENGTH := 10
+
 const MIN_LENGTH := 5
 
-const STATE_SEND_INTERVAL := 0.05
-const COLLISION_CHECK_INTERVAL := 0.05
-const FOOD_CHECK_INTERVAL := 0.05
+const STATE_INTERVAL := 0.05
+
+const COLLISION_INTERVAL := 0.05
+
+const FOOD_INTERVAL := 0.05
 
 const HEAD_COLLISION_DISTANCE := 32.0
+
 const BODY_COLLISION_DISTANCE := 28.0
 
-const SPAWN_PROTECTION_TIME := 3.0
+const PROTECTION_TIME := 3.0
 
-const KILL_COINS := 100
-const KILL_XP := 50
+# =========================================================
+# ROOM SETTINGS
+# =========================================================
 
-const LOOT_PER_SEGMENT := 1
+const DEFAULT_ROOM_MAX_PLAYERS := 10
+
+const MIN_ROOM_PLAYERS := 2
+
+const MAX_ROOM_PLAYERS := 20
+
+const ROOM_CODE_LENGTH := 6
+
+const MATCHMAKING_MAX_PLAYERS := 10
+
+const MATCHMAKING_TIMEOUT := 20.0
+
+# =========================================================
+# REWARDS
+# =========================================================
+
+const KILL_REWARD_COINS := 100
+
+const KILL_REWARD_XP := 50
+
+const DEATH_LOOT_PER_SEGMENT := 1
+
 const LOOT_COIN_VALUE := 10
+
 const LOOT_XP_VALUE := 5
+
 const MAX_DEATH_LOOT := 35
 
-var peer: ENetMultiplayerPeer
-var is_host := false
-var is_connected := false
+# =========================================================
+# NETWORK
+# =========================================================
 
-var local_player_id := 0
-var local_player_name := "لاعب"
+var peer: ENetMultiplayerPeer
+
+var is_server: bool = false
+
+var is_connected_to_server: bool = false
+
+var local_player_id: int = 0
+
+# =========================================================
+# ROOM STATE
+# =========================================================
+
+var current_room_code: String = ""
+
+var current_room_name: String = ""
+
+var current_room_max_players: int = DEFAULT_ROOM_MAX_PLAYERS
+
+var current_room_started: bool = false
+
+var matchmaking_active: bool = false
+
+var matchmaking_time: float = 0.0
+
+# =========================================================
+# ROOMS
+# =========================================================
+
+var rooms: Dictionary = {}
+
+# Server-side room structure:
+#
+# rooms[room_code] = {
+#     "code": String,
+#     "name": String,
+#     "host_id": int,
+#     "max_players": int,
+#     "started": bool,
+#     "players": Array
+# }
+
+# =========================================================
+# PLAYERS
+# =========================================================
 
 var players: Dictionary = {}
-var player_states: Dictionary = {}
 
-var foods: Dictionary = {}
-var death_loot: Dictionary = {}
+# player:
+#
+# {
+#   "id": int,
+#   "name": String,
+#   "position": Vector2,
+#   "direction": Vector2,
+#   "length": int,
+#   "alive": bool,
+#   "kills": int,
+#   "deaths": int,
+#   "protected_until": float,
+#   "room": String
+# }
 
-var next_food_id := 1
-var next_loot_id := 1
+# =========================================================
+# FOOD
+# =========================================================
 
-var state_timer := 0.0
-var collision_timer := 0.0
-var food_timer := 0.0
+var food: Dictionary = {}
 
-var processed_deaths: Dictionary = {}
+var food_counter: int = 0
 
+# =========================================================
+# LOOT
+# =========================================================
+
+var loot: Dictionary = {}
+
+var loot_counter: int = 0
+
+# =========================================================
+# TIMERS
+# =========================================================
+
+var state_timer: float = 0.0
+
+var collision_timer: float = 0.0
+
+var food_timer: float = 0.0
+
+var leaderboard_timer: float = 0.0
+
+# =========================================================
+# LEADERBOARD
+# =========================================================
+
+var current_leaderboard: Array = []
+
+# =========================================================
+# READY
+# =========================================================
 
 func _ready() -> void:
-	multiplayer.peer_connected.connect(_on_peer_connected)
-	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+
+	multiplayer.peer_connected.connect(
+		_on_peer_connected
+	)
+
+	multiplayer.peer_disconnected.connect(
+		_on_peer_disconnected
+	)
+
+	multiplayer.connected_to_server.connect(
+		_on_connected_to_server
+	)
+
+	multiplayer.connection_failed.connect(
+		_on_connection_failed
+	)
+
+	set_process(true)
 
 
 # =========================================================
-# HOST
+# PROCESS
 # =========================================================
 
-func host_game(player_name: String = "لاعب") -> bool:
+func _process(delta: float) -> void:
+
+	if not multiplayer.has_multiplayer_peer():
+		return
+
+	if is_server:
+
+		state_timer += delta
+		collision_timer += delta
+		food_timer += delta
+		leaderboard_timer += delta
+
+		_process_rooms(delta)
+
+		if state_timer >= STATE_INTERVAL:
+
+			state_timer = 0.0
+
+			_broadcast_player_states()
+
+		if collision_timer >= COLLISION_INTERVAL:
+
+			collision_timer = 0.0
+
+			_check_all_collisions()
+
+		if food_timer >= FOOD_INTERVAL:
+
+			food_timer = 0.0
+
+			_check_food_collection()
+
+		if leaderboard_timer >= 0.25:
+
+			leaderboard_timer = 0.0
+
+			_send_leaderboard()
+
+	if matchmaking_active and not is_server:
+
+		matchmaking_time += delta
+
+		if matchmaking_time >= MATCHMAKING_TIMEOUT:
+
+			stop_matchmaking()
+
+
+# =========================================================
+# CREATE SERVER
+# =========================================================
+
+func host_game(
+	room_name: String = "غرفة عربية",
+	max_room_players: int = DEFAULT_ROOM_MAX_PLAYERS
+) -> bool:
+
 	close_connection()
 
 	peer = ENetMultiplayerPeer.new()
 
-	var result := peer.create_server(PORT, MAX_PLAYERS)
+	var result := peer.create_server(
+		PORT,
+		MAX_PLAYERS
+	)
 
 	if result != OK:
-		push_error("فشل إنشاء السيرفر: " + str(result))
+
+		push_error(
+			"Failed to create server: "
+			+ str(result)
+		)
+
 		return false
 
 	multiplayer.multiplayer_peer = peer
 
-	is_host = true
-	is_connected = true
-	local_player_id = multiplayer.get_unique_id()
-	local_player_name = player_name
+	is_server = true
 
-	_register_local_player()
+	is_connected_to_server = true
 
-	_create_initial_food()
-
-	print("SERVER STARTED")
-	print("Port: ", PORT)
-
-	return true
-
-
-# =========================================================
-# CLIENT
-# =========================================================
-
-func join_game(address: String, player_name: String = "لاعب") -> bool:
-	close_connection()
-
-	peer = ENetMultiplayerPeer.new()
-
-	var result := peer.create_client(address, PORT)
-
-	if result != OK:
-		push_error("فشل الاتصال بالسيرفر: " + str(result))
-		connection_failed.emit()
-		return false
-
-	multiplayer.multiplayer_peer = peer
-
-	is_host = false
-	is_connected = true
-	local_player_name = player_name
-
-	return true
-
-
-func _on_connected_to_server() -> void:
 	local_player_id = multiplayer.get_unique_id()
 
-	register_player.rpc_id(
-		1,
-		local_player_id,
-		local_player_name
+	current_room_code = _generate_room_code()
+
+	current_room_name = room_name
+
+	current_room_max_players = clamp(
+		max_room_players,
+		MIN_ROOM_PLAYERS,
+		MAX_ROOM_PLAYERS
+	)
+
+	current_room_started = false
+
+	_create_server_room()
+
+	print(
+		"Server started on port ",
+		PORT
+	)
+
+	print(
+		"Room Code: ",
+		current_room_code
 	)
 
 	connected_to_server.emit()
 
+	room_created_signal.emit(
+		current_room_code
+	)
+
+	return true
+
 
 # =========================================================
-# CONNECTION
+# JOIN SERVER
 # =========================================================
 
-func _on_peer_connected(id: int) -> void:
-	print("Player connected: ", id)
+func join_game(
+	address: String,
+	room_code: String = ""
+) -> bool:
 
+	close_connection()
 
-func _on_peer_disconnected(id: int) -> void:
-	print("Player disconnected: ", id)
+	peer = ENetMultiplayerPeer.new()
 
-	if is_host:
-		if players.has(id):
-			players.erase(id)
+	var result := peer.create_client(
+		address,
+		PORT
+	)
 
-		if player_states.has(id):
-			player_states.erase(id)
+	if result != OK:
 
-		_sync_players_to_all()
-		_send_leaderboard()
+		push_error(
+			"Failed to connect: "
+			+ str(result)
+		)
 
-		player_disconnected.emit(id)
-		player_left_signal.emit(id)
+		connection_failed.emit()
 
+		return false
 
-func close_connection() -> void:
-	if multiplayer.multiplayer_peer:
-		multiplayer.multiplayer_peer.close()
+	multiplayer.multiplayer_peer = peer
 
-	multiplayer.multiplayer_peer = null
+	is_server = false
 
-	players.clear()
-	player_states.clear()
-	foods.clear()
-	death_loot.clear()
+	is_connected_to_server = false
 
-	is_host = false
-	is_connected = false
-	local_player_id = 0
+	current_room_code = room_code.to_upper()
+
+	print(
+		"Connecting to server: ",
+		address
+	)
+
+	return true
+
 
 # =========================================================
-# PLAYER REGISTER
+# CONNECTION SUCCESS
 # =========================================================
 
-func _register_local_player() -> void:
-	var spawn_position := _get_safe_spawn_position()
+func _on_connected_to_server() -> void:
 
-	players[local_player_id] = {
-		"name": local_player_name,
-		"position": spawn_position,
-		"direction": Vector2.RIGHT,
-		"length": INITIAL_LENGTH,
-		"alive": true,
-		"kills": 0,
-		"deaths": 0,
-		"protected_until": Time.get_ticks_msec() / 1000.0 + SPAWN_PROTECTION_TIME
+	is_connected_to_server = true
+
+	local_player_id = multiplayer.get_unique_id()
+
+	print(
+		"Connected to server. ID: ",
+		local_player_id
+	)
+
+	connected_to_server.emit()
+
+	# إرسال طلب الانضمام للغرفة
+	if current_room_code != "":
+
+		request_join_room.rpc_id(
+			1,
+			current_room_code,
+			Global.player_name
+		)
+
+
+# =========================================================
+# CONNECTION FAILED
+# =========================================================
+
+func _on_connection_failed() -> void:
+
+	is_connected_to_server = false
+
+	print(
+		"Connection failed."
+	)
+
+	connection_failed.emit()
+
+
+# =========================================================
+# PEER CONNECTED
+# =========================================================
+
+func _on_peer_connected(
+	peer_id: int
+) -> void:
+
+	print(
+		"Peer connected: ",
+		peer_id
+	)
+
+	player_connected.emit()
+
+
+# =========================================================
+# PEER DISCONNECTED
+# =========================================================
+
+func _on_peer_disconnected(
+	peer_id: int
+) -> void:
+
+	print(
+		"Peer disconnected: ",
+		peer_id
+	)
+
+	if is_server:
+
+		_remove_player_from_room(
+			peer_id
+		)
+
+		if players.has(peer_id):
+
+			var player_name: String = players[
+				peer_id
+			].get(
+				"name",
+				"لاعب"
+			)
+
+			players.erase(
+				peer_id
+			)
+
+			player_left_rpc.rpc(
+				peer_id,
+				player_name
+			)
+
+		_send_room_update()
+
+	player_disconnected.emit()
+
+
+# =========================================================
+# CREATE SERVER ROOM
+# =========================================================
+
+func _create_server_room() -> void:
+
+	var room_data := {
+		"code": current_room_code,
+		"name": current_room_name,
+		"host_id": local_player_id,
+		"max_players": current_room_max_players,
+		"started": false,
+		"players": []
 	}
 
-	player_states[local_player_id] = players[local_player_id].duplicate(true)
+	rooms[current_room_code] = room_data
 
-	_sync_players_to_all()
-	_send_leaderboard()
+	# إضافة المضيف
+	rooms[current_room_code]["players"].append(
+		local_player_id
+	)
+
+	_register_player(
+		local_player_id,
+		Global.player_name
+	)
 
 
-@rpc("any_peer", "reliable")
-func register_player(peer_id: int, player_name: String) -> void:
-	if not is_host:
-		return
+# =========================================================
+# REGISTER PLAYER
+# =========================================================
 
-	var sender := multiplayer.get_remote_sender_id()
-
-	if sender != peer_id:
-		peer_id = sender
-
-	player_name = player_name.strip_edges()
-
-	if player_name.is_empty():
-		player_name = "لاعب"
-
-	if player_name.length() > 20:
-		player_name = player_name.substr(0, 20)
+func _register_player(
+	peer_id: int,
+	player_name: String
+) -> void:
 
 	var spawn_position := _get_safe_spawn_position()
 
 	players[peer_id] = {
+		"id": peer_id,
 		"name": player_name,
 		"position": spawn_position,
 		"direction": Vector2.RIGHT,
@@ -236,49 +543,937 @@ func register_player(peer_id: int, player_name: String) -> void:
 		"alive": true,
 		"kills": 0,
 		"deaths": 0,
-		"protected_until": Time.get_ticks_msec() / 1000.0 + SPAWN_PROTECTION_TIME
+		"protected_until": Time.get_ticks_msec() / 1000.0 + PROTECTION_TIME,
+		"room": current_room_code
 	}
 
-	player_states[peer_id] = players[peer_id].duplicate(true)
 
-	player_joined_rpc.rpc(peer_id, player_name)
+# =========================================================
+# REQUEST JOIN ROOM
+# =========================================================
 
-	_sync_players_to_all()
-	_send_leaderboard()
+@rpc("any_peer", "reliable")
+func request_join_room(
+	room_code: String,
+	player_name: String
+) -> void:
 
+	if not is_server:
+		return
 
-@rpc("authority", "call_remote", "reliable")
-func player_joined_rpc(peer_id: int, player_name: String) -> void:
-	player_joined_signal.emit(peer_id, player_name)
+	var sender_id := multiplayer.get_remote_sender_id()
 
+	room_code = room_code.to_upper()
 
-func _get_safe_spawn_position() -> Vector2:
-	var attempts := 30
+	if not rooms.has(room_code):
 
-	for i in range(attempts):
-		var candidate := Vector2(
-			randf_range(-MAP_SIZE.x / 2.0 + SPAWN_MARGIN, MAP_SIZE.x / 2.0 - SPAWN_MARGIN),
-			randf_range(-MAP_SIZE.y / 2.0 + SPAWN_MARGIN, MAP_SIZE.y / 2.0 - SPAWN_MARGIN)
+		room_join_failed_rpc.rpc_id(
+			sender_id,
+			"الغرفة غير موجودة"
 		)
 
-		var safe := true
+		return
 
-		for id in players:
-			var data: Dictionary = players[id]
+	var room: Dictionary = rooms[
+		room_code
+	]
 
-			if not data.get("alive", false):
+	var room_players: Array = room[
+		"players"
+	]
+
+	if room["started"]:
+
+		room_join_failed_rpc.rpc_id(
+			sender_id,
+			"المباراة بدأت بالفعل"
+		)
+
+		return
+
+	if room_players.size() >= room["max_players"]:
+
+		room_join_failed_rpc.rpc_id(
+			sender_id,
+			"الغرفة ممتلئة"
+		)
+
+		return
+
+	if room_players.has(sender_id):
+
+		return
+
+	# -----------------------------------------------------
+	# إضافة اللاعب
+	# -----------------------------------------------------
+
+	room_players.append(
+		sender_id
+	)
+
+	rooms[room_code] = room
+
+	# إذا كان اللاعب في غرفة أخرى
+	_remove_player_from_other_rooms(
+		sender_id,
+		room_code
+	)
+
+	var clean_name := player_name.strip_edges()
+
+	if clean_name == "":
+		clean_name = "لاعب"
+
+	players[sender_id] = {
+		"id": sender_id,
+		"name": clean_name,
+		"position": _get_safe_spawn_position(),
+		"direction": Vector2.RIGHT,
+		"length": INITIAL_LENGTH,
+		"alive": true,
+		"kills": 0,
+		"deaths": 0,
+		"protected_until": Time.get_ticks_msec() / 1000.0 + PROTECTION_TIME,
+		"room": room_code
+	}
+
+	player_joined_rpc.rpc(
+		sender_id,
+		clean_name
+	)
+
+	_send_room_update()
+
+	_sync_players_to_room(
+		room_code
+	)
+
+	print(
+		"Player ",
+		sender_id,
+		" joined room ",
+		room_code
+	)
+
+
+# =========================================================
+# REMOVE PLAYER FROM OTHER ROOMS
+# =========================================================
+
+func _remove_player_from_other_rooms(
+	peer_id: int,
+	except_room: String
+) -> void:
+
+	for code in rooms.keys():
+
+		if code == except_room:
+			continue
+
+		var room: Dictionary = rooms[
+			code
+		]
+
+		var room_players: Array = room[
+			"players"
+		]
+
+		if room_players.has(peer_id):
+
+			room_players.erase(
+				peer_id
+			)
+
+			room["players"] = room_players
+
+			rooms[code] = room
+
+
+# =========================================================
+# LEAVE ROOM
+# =========================================================
+
+@rpc("any_peer", "reliable")
+func request_leave_room() -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	_leave_room_server(
+		sender_id
+	)
+
+
+func leave_room() -> void:
+
+	if is_server:
+
+		_leave_room_server(
+			local_player_id
+		)
+
+	else:
+
+		if multiplayer.has_multiplayer_peer():
+
+			request_leave_room.rpc_id(
+				1
+			)
+
+
+# =========================================================
+# SERVER LEAVE
+# =========================================================
+
+func _leave_room_server(
+	peer_id: int
+) -> void:
+
+	var room_code := ""
+
+	if players.has(peer_id):
+
+		room_code = players[
+			peer_id
+		].get(
+			"room",
+			""
+		)
+
+	if room_code != "" and rooms.has(room_code):
+
+		var room: Dictionary = rooms[
+			room_code
+		]
+
+		var room_players: Array = room[
+			"players"
+		]
+
+		room_players.erase(
+			peer_id
+		)
+
+		room["players"] = room_players
+
+		# -------------------------------------------------
+		# إذا خرج المضيف
+		# -------------------------------------------------
+
+		if int(room["host_id"]) == peer_id:
+
+			if room_players.is_empty():
+
+				rooms.erase(
+					room_code
+				)
+
+			else:
+
+				room["host_id"] = int(
+					room_players[0]
+				)
+
+				rooms[room_code] = room
+
+		else:
+
+			rooms[room_code] = room
+
+	players.erase(
+		peer_id
+	)
+
+	if peer_id == local_player_id:
+
+		current_room_code = ""
+
+		current_room_name = ""
+
+		current_room_started = false
+
+	room_left_signal.emit()
+
+	_send_room_update()
+
+
+# =========================================================
+# GET ROOM LIST
+# =========================================================
+
+@rpc("any_peer", "reliable")
+func request_room_list() -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	var room_list: Array = []
+
+	for code in rooms.keys():
+
+		var room: Dictionary = rooms[
+			code
+		]
+
+		room_list.append({
+			"code": room["code"],
+			"name": room["name"],
+			"players": room["players"].size(),
+			"max_players": room["max_players"],
+			"started": room["started"]
+		})
+
+	room_list_rpc.rpc_id(
+		sender_id,
+		room_list
+	)
+
+
+# =========================================================
+# ROOM LIST RPC
+# =========================================================
+
+@rpc("authority", "reliable")
+func room_list_rpc(
+	room_list: Array
+) -> void:
+
+	rooms.clear()
+
+	for room_data in room_list:
+
+		rooms[
+			room_data["code"]
+		] = room_data
+
+
+# =========================================================
+# ROOM UPDATE
+# =========================================================
+
+func _send_room_update() -> void:
+
+	var room_list: Array = []
+
+	for code in rooms.keys():
+
+		var room: Dictionary = rooms[
+			code
+		]
+
+		room_list.append({
+			"code": room["code"],
+			"name": room["name"],
+			"host_id": room["host_id"],
+			"players": room["players"].size(),
+			"max_players": room["max_players"],
+			"started": room["started"]
+		})
+
+	room_update_rpc.rpc(
+		room_list
+	)
+
+	room_updated_signal.emit(
+		room_list
+	)
+
+
+@rpc("authority", "reliable")
+func room_update_rpc(
+	room_list: Array
+) -> void:
+
+	rooms.clear()
+
+	for room_data in room_list:
+
+		rooms[
+			room_data["code"]
+		] = room_data
+
+	room_updated_signal.emit(
+		room_list
+	)
+
+
+# =========================================================
+# START ROOM
+# =========================================================
+
+func start_room() -> bool:
+
+	if not is_server:
+		return false
+
+	if current_room_code == "":
+		return false
+
+	if not rooms.has(
+		current_room_code
+	):
+		return false
+
+	var room: Dictionary = rooms[
+		current_room_code
+	]
+
+	var room_players: Array = room[
+		"players"
+	]
+
+	if room_players.size() < MIN_ROOM_PLAYERS:
+
+		room_error_signal.emit(
+			"يجب وجود لاعبين على الأقل"
+		)
+
+		return false
+
+	room["started"] = true
+
+	rooms[current_room_code] = room
+
+	current_room_started = true
+
+	start_room_rpc.rpc(
+		current_room_code
+	)
+
+	room_started_signal.emit(
+		current_room_code
+	)
+
+	_send_room_update()
+
+	return true
+
+
+@rpc("any_peer", "reliable")
+func request_start_room() -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	if current_room_code == "":
+		return
+
+	if not rooms.has(
+		current_room_code
+	):
+		return
+
+	var room: Dictionary = rooms[
+		current_room_code
+	]
+
+	if int(room["host_id"]) != sender_id:
+
+		return
+
+	start_room()
+
+
+@rpc("authority", "reliable")
+func start_room_rpc(
+	room_code: String
+) -> void:
+
+	current_room_code = room_code
+
+	current_room_started = true
+
+	room_started_signal.emit(
+		room_code
+	)
+
+
+# =========================================================
+# STOP ROOM
+# =========================================================
+
+func stop_room() -> void:
+
+	if not is_server:
+		return
+
+	if current_room_code == "":
+		return
+
+	if not rooms.has(
+		current_room_code
+	):
+		return
+
+	var room: Dictionary = rooms[
+		current_room_code
+	]
+
+	room["started"] = false
+
+	rooms[current_room_code] = room
+
+	current_room_started = false
+
+	room_stopped_rpc.rpc(
+		current_room_code
+	)
+
+	_send_room_update()
+
+
+@rpc("authority", "reliable")
+func room_stopped_rpc(
+	room_code: String
+) -> void:
+
+	if current_room_code != room_code:
+		return
+
+	current_room_started = false
+
+
+# =========================================================
+# MATCHMAKING
+# =========================================================
+
+func start_matchmaking() -> void:
+
+	if is_server:
+		return
+
+	if matchmaking_active:
+		return
+
+	matchmaking_active = true
+
+	matchmaking_time = 0.0
+
+	matchmaking_started_signal.emit()
+
+	request_matchmaking.rpc_id(
+		1,
+		Global.player_name
+	)
+
+
+func stop_matchmaking() -> void:
+
+	if not matchmaking_active:
+		return
+
+	matchmaking_active = false
+
+	matchmaking_time = 0.0
+
+	if not is_server:
+
+		if multiplayer.has_multiplayer_peer():
+
+			cancel_matchmaking.rpc_id(
+				1
+			)
+
+	matchmaking_stopped_signal.emit()
+
+
+@rpc("any_peer", "reliable")
+func request_matchmaking(
+	player_name: String
+) -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	# -----------------------------------------------------
+	# البحث عن غرفة مناسبة
+	# -----------------------------------------------------
+
+	var selected_room := ""
+
+	for code in rooms.keys():
+
+		var room: Dictionary = rooms[
+			code
+		]
+
+		if room["started"]:
+			continue
+
+		var room_players: Array = room[
+			"players"
+		]
+
+		if room_players.size() >= room["max_players"]:
+			continue
+
+		if room_players.size() >= MATCHMAKING_MAX_PLAYERS:
+			continue
+
+		selected_room = code
+
+		break
+
+	# -----------------------------------------------------
+	# لا توجد غرفة -> إنشاء غرفة
+	# -----------------------------------------------------
+
+	if selected_room == "":
+
+		selected_room = _generate_room_code()
+
+		while rooms.has(
+			selected_room
+		):
+
+			selected_room = _generate_room_code()
+
+		rooms[selected_room] = {
+			"code": selected_room,
+			"name": "مباراة سريعة",
+			"host_id": sender_id,
+			"max_players": MATCHMAKING_MAX_PLAYERS,
+			"started": false,
+			"players": []
+		}
+
+	# -----------------------------------------------------
+	# إضافة اللاعب
+	# -----------------------------------------------------
+
+	var room: Dictionary = rooms[
+		selected_room
+	]
+
+	var room_players: Array = room[
+		"players"
+	]
+
+	if not room_players.has(
+		sender_id
+	):
+
+		room_players.append(
+			sender_id
+		)
+
+	room["players"] = room_players
+
+	rooms[selected_room] = room
+
+	players[sender_id] = {
+		"id": sender_id,
+		"name": player_name,
+		"position": _get_safe_spawn_position(),
+		"direction": Vector2.RIGHT,
+		"length": INITIAL_LENGTH,
+		"alive": true,
+		"kills": 0,
+		"deaths": 0,
+		"protected_until": Time.get_ticks_msec() / 1000.0 + PROTECTION_TIME,
+		"room": selected_room
+	}
+
+	assign_matchmaking_room_rpc.rpc_id(
+		sender_id,
+		selected_room
+	)
+
+	_sync_players_to_room(
+		selected_room
+	)
+
+	# -----------------------------------------------------
+	# بدء المباراة إذا أصبح العدد مناسبًا
+	# -----------------------------------------------------
+
+	if room_players.size() >= MIN_ROOM_PLAYERS:
+
+		room["started"] = true
+
+		rooms[selected_room] = room
+
+		start_room_rpc.rpc(
+			selected_room
+		)
+
+	_send_room_update()
+
+
+@rpc("any_peer", "reliable")
+func cancel_matchmaking() -> void:
+
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	_remove_player_from_room(
+		sender_id
+	)
+
+
+@rpc("authority", "reliable")
+func assign_matchmaking_room_rpc(
+	room_code: String
+) -> void:
+
+	current_room_code = room_code
+
+	matchmaking_active = false
+
+	matchmaking_time = 0.0
+
+	room_joined_signal.emit(
+		room_code
+	)
+
+	room_started_signal.emit(
+		room_code
+	)
+
+
+# =========================================================
+# ROOM JOINED
+# =========================================================
+
+@rpc("authority", "reliable")
+func room_joined_rpc(
+	room_code: String,
+	room_name: String,
+	max_players: int,
+	started: bool
+) -> void:
+
+	current_room_code = room_code
+
+	current_room_name = room_name
+
+	current_room_max_players = max_players
+
+	current_room_started = started
+
+	matchmaking_active = false
+
+	room_joined_signal.emit(
+		room_code
+	)
+
+
+# =========================================================
+# ROOM JOIN FAILED
+# =========================================================
+
+@rpc("authority", "reliable")
+func room_join_failed_rpc(
+	message: String
+) -> void:
+
+	print(
+		"Room join failed: ",
+		message
+	)
+
+	room_error_signal.emit(
+		message
+	)
+
+
+# =========================================================
+# ROOM PLAYER REMOVAL
+# =========================================================
+
+func _remove_player_from_room(
+	peer_id: int
+) -> void:
+
+	if not players.has(peer_id):
+		return
+
+	var room_code: String = players[
+		peer_id
+	].get(
+		"room",
+		""
+	)
+
+	if room_code == "":
+		return
+
+	if not rooms.has(room_code):
+		return
+
+	var room: Dictionary = rooms[
+		room_code
+	]
+
+	var room_players: Array = room[
+		"players"
+	]
+
+	room_players.erase(
+		peer_id
+	)
+
+	room["players"] = room_players
+
+	if room_players.is_empty():
+
+		rooms.erase(
+			room_code
+		)
+
+	else:
+
+		if int(room["host_id"]) == peer_id:
+
+			room["host_id"] = int(
+				room_players[0]
+			)
+
+		rooms[room_code] = room
+
+
+# =========================================================
+# SYNC PLAYERS
+# =========================================================
+
+func _sync_players_to_room(
+	room_code: String
+) -> void:
+
+	if not rooms.has(room_code):
+		return
+
+	var room: Dictionary = rooms[
+		room_code
+	]
+
+	var room_players: Array = room[
+		"players"
+	]
+
+	var snapshot: Array = []
+
+	for peer_id in room_players:
+
+		if not players.has(peer_id):
+			continue
+
+		var player: Dictionary = players[
+			peer_id
+		]
+
+		snapshot.append({
+			"id": peer_id,
+			"name": player["name"],
+			"position": player["position"],
+			"direction": player["direction"],
+			"length": player["length"],
+			"alive": player["alive"],
+			"kills": player["kills"],
+			"deaths": player["deaths"]
+		})
+
+	for peer_id in room_players:
+
+		if peer_id == local_player_id:
+			continue
+
+		sync_players_rpc.rpc_id(
+			peer_id,
+			snapshot
+		)
+
+	players_synced_signal.emit(
+		snapshot
+	)
+
+
+@rpc("authority", "reliable")
+func sync_players_rpc(
+	snapshot: Array
+) -> void:
+
+	players_synced_signal.emit(
+		snapshot
+	)
+
+
+# =========================================================
+# BROADCAST PLAYER STATES
+# =========================================================
+
+func _broadcast_player_states() -> void:
+
+	var room_snapshots: Dictionary = {}
+
+	for peer_id in players.keys():
+
+		var player: Dictionary = players[
+			peer_id
+		]
+
+		var room_code: String = player.get(
+			"room",
+			""
+		)
+
+		if room_code == "":
+			continue
+
+		if not room_snapshots.has(
+			room_code
+		):
+
+			room_snapshots[room_code] = []
+
+		room_snapshots[room_code].append({
+			"id": peer_id,
+			"name": player["name"],
+			"position": player["position"],
+			"direction": player["direction"],
+			"length": player["length"],
+			"alive": player["alive"],
+			"kills": player["kills"],
+			"deaths": player["deaths"]
+		})
+
+	for room_code in room_snapshots.keys():
+
+		var snapshot: Array = room_snapshots[
+			room_code
+		]
+
+		if not rooms.has(room_code):
+			continue
+
+		var room: Dictionary = rooms[
+			room_code
+		]
+
+		var room_players: Array = room[
+			"players"
+		]
+
+		for peer_id in room_players:
+
+			if peer_id == local_player_id:
 				continue
 
-			var other_position: Vector2 = data.get("position", Vector2.ZERO)
-
-			if candidate.distance_to(other_position) < MIN_SPAWN_DISTANCE:
-				safe = false
-				break
-
-		if safe:
-			return candidate
-
-	return Vector2.ZERO
+			sync_players_rpc.rpc_id(
+				peer_id,
+				snapshot
+			)
 
 
 # =========================================================
@@ -286,388 +1481,334 @@ func _get_safe_spawn_position() -> Vector2:
 # =========================================================
 
 func broadcast_player_state(
-	position_value: Vector2,
-	direction_value: Vector2,
-	length_value: int,
-	alive_value: bool
+	new_position: Vector2,
+	new_direction: Vector2,
+	new_length: int
 ) -> void:
 
-	if not is_connected:
+	if local_player_id == 0:
 		return
 
-	if is_host:
+	if is_server:
+
 		_update_server_player_state(
 			local_player_id,
-			position_value,
-			direction_value,
-			length_value,
-			alive_value
+			new_position,
+			new_direction,
+			new_length
 		)
 
 		return
 
+	if not multiplayer.has_multiplayer_peer():
+		return
+
 	submit_player_state.rpc_id(
 		1,
-		position_value,
-		direction_value,
-		length_value,
-		alive_value
+		new_position,
+		new_direction,
+		new_length
 	)
 
 
 @rpc("any_peer", "unreliable")
 func submit_player_state(
-	position_value: Vector2,
-	direction_value: Vector2,
-	length_value: int,
-	alive_value: bool
+	new_position: Vector2,
+	new_direction: Vector2,
+	new_length: int
 ) -> void:
 
-	if not is_host:
+	if not is_server:
 		return
 
-	var sender := multiplayer.get_remote_sender_id()
+	var sender_id := multiplayer.get_remote_sender_id()
 
 	_update_server_player_state(
-		sender,
-		position_value,
-		direction_value,
-		length_value,
-		alive_value
+		sender_id,
+		new_position,
+		new_direction,
+		new_length
 	)
 
 
 func _update_server_player_state(
 	peer_id: int,
-	position_value: Vector2,
-	direction_value: Vector2,
-	length_value: int,
-	alive_value: bool
+	new_position: Vector2,
+	new_direction: Vector2,
+	new_length: int
 ) -> void:
 
 	if not players.has(peer_id):
 		return
 
-	var data: Dictionary = players[peer_id]
+	var player: Dictionary = players[
+		peer_id
+	]
 
-	data["position"] = position_value
-	data["direction"] = direction_value
-	data["length"] = max(MIN_LENGTH, length_value)
-	data["alive"] = alive_value
+	player["position"] = new_position
 
-	players[peer_id] = data
-	player_states[peer_id] = data.duplicate(true)
+	player["direction"] = new_direction.normalized()
 
-
-func _process(delta: float) -> void:
-	if not is_host:
-		return
-
-	state_timer += delta
-	collision_timer += delta
-	food_timer += delta
-
-	if state_timer >= STATE_SEND_INTERVAL:
-		state_timer = 0.0
-		_sync_players_to_all()
-
-	if collision_timer >= COLLISION_CHECK_INTERVAL:
-		collision_timer = 0.0
-		_check_server_collisions()
-
-	if food_timer >= FOOD_CHECK_INTERVAL:
-		food_timer = 0.0
-		_check_food_collections()
-		_check_loot_collections()
-
-	_cleanup_processed_deaths()
-
-
-# =========================================================
-# PLAYER SYNC
-# =========================================================
-
-func _sync_players_to_all() -> void:
-	var snapshot: Dictionary = {}
-
-	for id in players:
-		snapshot[id] = players[id].duplicate(true)
-
-	sync_players_rpc.rpc(snapshot)
-
-
-@rpc("authority", "call_remote", "unreliable")
-func sync_players_rpc(snapshot: Dictionary) -> void:
-	players_synced_signal.emit(snapshot)
-
-	leaderboard_updated_signal.emit(
-		_build_leaderboard_from_snapshot(snapshot)
+	player["length"] = clamp(
+		new_length,
+		MIN_LENGTH,
+		10000
 	)
 
-
-# =========================================================
-# LEADERBOARD
-# =========================================================
-
-func _build_leaderboard_from_snapshot(snapshot: Dictionary) -> Array:
-	var leaderboard: Array = []
-
-	for id in snapshot:
-		var data: Dictionary = snapshot[id]
-
-		leaderboard.append({
-			"id": int(id),
-			"name": str(data.get("name", "لاعب")),
-			"length": int(data.get("length", INITIAL_LENGTH)),
-			"kills": int(data.get("kills", 0)),
-			"deaths": int(data.get("deaths", 0)),
-			"alive": bool(data.get("alive", true))
-		})
-
-	leaderboard.sort_custom(_sort_leaderboard)
-
-	for i in range(leaderboard.size()):
-		leaderboard[i]["rank"] = i + 1
-
-	return leaderboard
-
-
-func _sort_leaderboard(a: Dictionary, b: Dictionary) -> bool:
-	var length_a := int(a.get("length", 0))
-	var length_b := int(b.get("length", 0))
-
-	if length_a != length_b:
-		return length_a > length_b
-
-	var kills_a := int(a.get("kills", 0))
-	var kills_b := int(b.get("kills", 0))
-
-	if kills_a != kills_b:
-		return kills_a > kills_b
-
-	return int(a.get("id", 0)) < int(b.get("id", 0))
-
-
-func _send_leaderboard() -> void:
-	var leaderboard := _build_leaderboard_from_snapshot(players)
-
-	leaderboard_updated_signal.emit(leaderboard)
-
-	leaderboard_rpc.rpc(leaderboard)
-
-
-@rpc("authority", "call_remote", "reliable")
-func leaderboard_rpc(data: Array) -> void:
-	leaderboard_updated_signal.emit(data)
-
-
-func get_current_leaderboard() -> Array:
-	return _build_leaderboard_from_snapshot(players)
-
-
-func get_player_rank(peer_id: int) -> int:
-	var leaderboard := _build_leaderboard_from_snapshot(players)
-
-	for entry in leaderboard:
-		if int(entry.get("id", 0)) == peer_id:
-			return int(entry.get("rank", 0))
-
-	return 0
+	players[peer_id] = player
 
 
 # =========================================================
-# COLLISIONS
+# COLLISION CHECK
 # =========================================================
 
-func _check_server_collisions() -> void:
+func _check_all_collisions() -> void:
+
 	var ids := players.keys()
 
 	for i in range(ids.size()):
-		var id_a = ids[i]
 
-		if not players.has(id_a):
+		var first_id: int = ids[i]
+
+		if not players.has(first_id):
 			continue
 
-		if not players[id_a].get("alive", false):
+		var first_player: Dictionary = players[
+			first_id
+		]
+
+		if not first_player["alive"]:
 			continue
 
-		for j in range(i + 1, ids.size()):
-			var id_b = ids[j]
+		for j in range(
+			i + 1,
+			ids.size()
+		):
 
-			if not players.has(id_b):
+			var second_id: int = ids[j]
+
+			if not players.has(second_id):
 				continue
 
-			if not players[id_b].get("alive", false):
+			var second_player: Dictionary = players[
+				second_id
+			]
+
+			if not second_player["alive"]:
 				continue
 
-			_check_snake_pair(id_a, id_b)
+			if first_player["room"] != second_player["room"]:
+				continue
 
-
-func _check_snake_pair(id_a: int, id_b: int) -> void:
-	var a: Dictionary = players[id_a]
-	var b: Dictionary = players[id_b]
-
-	var pos_a: Vector2 = a.get("position", Vector2.ZERO)
-	var pos_b: Vector2 = b.get("position", Vector2.ZERO)
-
-	if pos_a.distance_to(pos_b) > HEAD_COLLISION_DISTANCE:
-		return
-
-	var protection_a := float(a.get("protected_until", 0.0))
-	var protection_b := float(b.get("protected_until", 0.0))
-
-	var now := Time.get_ticks_msec() / 1000.0
-
-	if now < protection_a or now < protection_b:
-		return
-
-	var length_a := int(a.get("length", INITIAL_LENGTH))
-	var length_b := int(b.get("length", INITIAL_LENGTH))
-
-	if length_a > length_b:
-		_kill_player(id_b, id_a, pos_b)
-	elif length_b > length_a:
-		_kill_player(id_a, id_b, pos_a)
-	else:
-		_kill_player(id_a, id_b, pos_a)
-		_kill_player(id_b, id_a, pos_b)
-
-
-func check_body_collision(
-	victim_id: int,
-	body_positions: Array[Vector2]
-) -> bool:
-
-	if not is_host:
-		return false
-
-	if not players.has(victim_id):
-		return false
-
-	if not players[victim_id].get("alive", false):
-		return false
-
-	var victim_position: Vector2 = players[victim_id].get(
-		"position",
-		Vector2.ZERO
-	)
-
-	for body_position in body_positions:
-		if victim_position.distance_to(body_position) <= BODY_COLLISION_DISTANCE:
-			return true
-
-	return false
+			_check_head_collision(
+				first_id,
+				second_id
+			)
 
 
 # =========================================================
-# DEATH / KILLS
+# HEAD COLLISION
+# =========================================================
+
+func _check_head_collision(
+	first_id: int,
+	second_id: int
+) -> void:
+
+	var first_player: Dictionary = players[
+		first_id
+	]
+
+	var second_player: Dictionary = players[
+		second_id
+	]
+
+	var distance := first_player[
+		"position"
+	].distance_to(
+		second_player[
+			"position"
+		]
+	)
+
+	if distance > HEAD_COLLISION_DISTANCE:
+		return
+
+	# حماية Spawn
+	var now := Time.get_ticks_msec() / 1000.0
+
+	if now < float(
+		first_player["protected_until"]
+	):
+		return
+
+	if now < float(
+		second_player["protected_until"]
+	):
+		return
+
+	var first_length: int = first_player[
+		"length"
+	]
+
+	var second_length: int = second_player[
+		"length"
+	]
+
+	# -----------------------------------------------------
+	# نفس الطول
+	# -----------------------------------------------------
+
+	if first_length == second_length:
+
+		_kill_player(
+			first_id,
+			second_id
+		)
+
+		_kill_player(
+			second_id,
+			first_id
+		)
+
+		return
+
+	# -----------------------------------------------------
+	# الأول أكبر
+	# -----------------------------------------------------
+
+	if first_length > second_length:
+
+		_kill_player(
+			second_id,
+			first_id
+		)
+
+	else:
+
+		_kill_player(
+			first_id,
+			second_id
+		)
+
+
+# =========================================================
+# KILL
 # =========================================================
 
 func _kill_player(
 	victim_id: int,
-	killer_id: int = 0,
-	death_position: Vector2 = Vector2.ZERO
+	killer_id: int
 ) -> void:
-
-	if not is_host:
-		return
 
 	if not players.has(victim_id):
 		return
 
-	if not players[victim_id].get("alive", false):
+	var victim: Dictionary = players[
+		victim_id
+	]
+
+	if not victim["alive"]:
 		return
-
-	if processed_deaths.has(victim_id):
-		return
-
-	processed_deaths[victim_id] = Time.get_ticks_msec()
-
-	var victim: Dictionary = players[victim_id]
 
 	victim["alive"] = false
-	victim["length"] = MIN_LENGTH
-	victim["deaths"] = int(victim.get("deaths", 0)) + 1
+
+	victim["deaths"] = int(
+		victim["deaths"]
+	) + 1
 
 	players[victim_id] = victim
 
-	var reward := {
-		"coins": 0,
-		"xp": 0
-	}
+	if killer_id != victim_id:
 
-	if killer_id != 0 and killer_id != victim_id and players.has(killer_id):
-		reward = _award_killer(killer_id)
+		if players.has(killer_id):
+
+			var killer: Dictionary = players[
+				killer_id
+			]
+
+			killer["kills"] = int(
+				killer["kills"]
+			) + 1
+
+			players[killer_id] = killer
+
+			_award_kill_reward(
+				killer_id
+			)
 
 	_spawn_death_loot(
-		death_position,
-		int(victim.get("length", INITIAL_LENGTH))
+		victim_id
 	)
 
 	player_died_rpc.rpc(
 		victim_id,
-		killer_id,
-		death_position,
-		reward
+		killer_id
 	)
 
-	_sync_players_to_all()
-	_send_leaderboard()
+	player_died_signal.emit(
+		victim_id,
+		killer_id
+	)
 
 
-func _award_killer(killer_id: int) -> Dictionary:
-	var reward := {
-		"coins": KILL_COINS,
-		"xp": KILL_XP
-	}
+# =========================================================
+# KILL REWARD
+# =========================================================
 
-	if not players.has(killer_id):
-		return reward
-
-	var killer: Dictionary = players[killer_id]
-
-	killer["kills"] = int(killer.get("kills", 0)) + 1
-
-	players[killer_id] = killer
-
-	if killer_id == local_player_id:
-		Global.add_coins(KILL_COINS)
-		Global.add_experience(KILL_XP)
+func _award_kill_reward(
+	killer_id: int
+) -> void:
 
 	award_killer_rpc.rpc(
 		killer_id,
-		KILL_COINS,
-		KILL_XP
+		KILL_REWARD_COINS,
+		KILL_REWARD_XP
 	)
 
-	return reward
+	if killer_id == local_player_id:
+
+		Global.add_coins(
+			KILL_REWARD_COINS
+		)
+
+		Global.add_experience(
+			KILL_REWARD_XP
+		)
 
 
-@rpc("authority", "call_remote", "reliable")
+@rpc("authority", "reliable")
 func award_killer_rpc(
 	killer_id: int,
 	coins: int,
 	xp: int
 ) -> void:
 
-	if killer_id == multiplayer.get_unique_id():
-		Global.add_coins(coins)
-		Global.add_experience(xp)
+	if killer_id != local_player_id:
+		return
+
+	Global.add_coins(
+		coins
+	)
+
+	Global.add_experience(
+		xp
+	)
 
 
-@rpc("authority", "call_remote", "reliable")
+# =========================================================
+# PLAYER DIED RPC
+# =========================================================
+
+@rpc("authority", "reliable")
 func player_died_rpc(
 	victim_id: int,
-	killer_id: int,
-	death_position: Vector2,
-	reward: Dictionary
+	killer_id: int
 ) -> void:
 
 	player_died_signal.emit(
 		victim_id,
-		killer_id,
-		death_position,
-		reward
+		killer_id
 	)
 
 
@@ -676,63 +1817,128 @@ func player_died_rpc(
 # =========================================================
 
 func request_respawn() -> void:
-	if not is_connected:
-		return
 
-	if is_host:
-		_respawn_player(local_player_id)
+	if is_server:
+
+		_respawn_player(
+			local_player_id
+		)
+
 	else:
-		request_respawn_rpc.rpc_id(1)
-	
+
+		request_respawn_rpc.rpc_id(
+			1
+		)
+
 
 @rpc("any_peer", "reliable")
 func request_respawn_rpc() -> void:
-	if not is_host:
+
+	if not is_server:
 		return
 
-	var sender := multiplayer.get_remote_sender_id()
+	var sender_id := multiplayer.get_remote_sender_id()
 
-	_respawn_player(sender)
+	_respawn_player(
+		sender_id
+	)
 
 
-func _respawn_player(peer_id: int) -> void:
+func _respawn_player(
+	peer_id: int
+) -> void:
+
 	if not players.has(peer_id):
 		return
 
-	var spawn_position := _get_safe_spawn_position()
+	var player: Dictionary = players[
+		peer_id
+	]
 
-	var data: Dictionary = players[peer_id]
+	player["position"] = _get_safe_spawn_position()
 
-	data["position"] = spawn_position
-	data["direction"] = Vector2.RIGHT
-	data["length"] = INITIAL_LENGTH
-	data["alive"] = true
-	data["protected_until"] = (
+	player["direction"] = Vector2.RIGHT
+
+	player["length"] = INITIAL_LENGTH
+
+	player["alive"] = true
+
+	player["protected_until"] = (
 		Time.get_ticks_msec() / 1000.0
-		+ SPAWN_PROTECTION_TIME
+		+ PROTECTION_TIME
 	)
 
-	players[peer_id] = data
-	player_states[peer_id] = data.duplicate(true)
+	players[peer_id] = player
 
 	player_respawned_rpc.rpc(
 		peer_id,
-		spawn_position
+		player["position"]
 	)
 
-	_sync_players_to_all()
-	_send_leaderboard()
+	player_respawned_signal.emit(
+		peer_id
+	)
 
 
-@rpc("authority", "call_remote", "reliable")
+@rpc("authority", "reliable")
 func player_respawned_rpc(
 	peer_id: int,
 	spawn_position: Vector2
 ) -> void:
 
 	player_respawned_signal.emit(
-		peer_id,
-		spawn_position
+		peer_id
+	)
+
+
+# =========================================================
+# SAFE SPAWN
+# =========================================================
+
+func _get_safe_spawn_position() -> Vector2:
+
+	var attempts := 0
+
+	while attempts < 50:
+
+		attempts += 1
+
+		var candidate := Vector2(
+			randf_range(
+				-SPAWN_MARGIN,
+				MAP_SIZE.x + SPAWN_MARGIN
+			),
+			randf_range(
+				-SPAWN_MARGIN,
+				MAP_SIZE.y + SPAWN_MARGIN
+			)
+		)
+
+		var valid := true
+
+		for peer_id in players.keys():
+
+			var player: Dictionary = players[
+				peer_id
+			]
+
+			if not player["alive"]:
+				continue
+
+			if candidate.distance_to(
+				player["position"]
+			) < MIN_SPAWN_DISTANCE:
+
+				valid = false
+
+				break
+
+		if valid:
+			return candidate
+
+	return Vector2(
+		MAP_SIZE.x * 0.5,
+		MAP_SIZE.y * 0.5
 	)
 
 
@@ -740,115 +1946,159 @@ func player_respawned_rpc(
 # FOOD
 # =========================================================
 
-func _create_initial_food() -> void:
-	for i in range(100):
-		_spawn_food()
+func spawn_food(
+	position: Vector2,
+	value: int = 1
+) -> int:
 
+	if not is_server:
+		return -1
 
-func _spawn_food() -> void:
-	var id := next_food_id
-	next_food_id += 1
+	food_counter += 1
 
-	var food := {
-		"id": id,
-		"position": Vector2(
-			randf_range(-MAP_SIZE.x / 2.0, MAP_SIZE.x / 2.0),
-			randf_range(-MAP_SIZE.y / 2.0, MAP_SIZE.y / 2.0)
-		),
-		"value": randi_range(1, 3)
+	var food_id := food_counter
+
+	food[food_id] = {
+		"id": food_id,
+		"position": position,
+		"value": value
 	}
 
-	foods[id] = food
-
 	food_spawned_rpc.rpc(
-		id,
-		food["position"],
-		food["value"]
+		food_id,
+		position,
+		value
 	)
 
+	food_spawned_signal.emit(
+		food_id,
+		position,
+		value
+	)
 
-@rpc("authority", "call_remote", "reliable")
+	return food_id
+
+
+@rpc("authority", "reliable")
 func food_spawned_rpc(
 	food_id: int,
-	position_value: Vector2,
+	position: Vector2,
 	value: int
 ) -> void:
 
-	foods[food_id] = {
+	food[food_id] = {
 		"id": food_id,
-		"position": position_value,
+		"position": position,
 		"value": value
 	}
 
 	food_spawned_signal.emit(
 		food_id,
-		position_value,
+		position,
 		value
 	)
 
 
-func _check_food_collections() -> void:
-	for player_id in players:
-		if not players[player_id].get("alive", false):
-			continue
+# =========================================================
+# FOOD COLLECTION
+# =========================================================
 
-		var player_position: Vector2 = players[player_id].get(
-			"position",
-			Vector2.ZERO
-		)
+func _check_food_collection() -> void:
+
+	if food.is_empty():
+		return
+
+	for peer_id in players.keys():
+
+		var player: Dictionary = players[
+			peer_id
+		]
+
+		if not player["alive"]:
+			continue
 
 		var collected_id := -1
 
-		for food_id in foods:
-			var food: Dictionary = foods[food_id]
+		for food_id in food.keys():
 
-			if player_position.distance_to(
-				food["position"]
+			var food_item: Dictionary = food[
+				food_id
+			]
+
+			if player["position"].distance_to(
+				food_item["position"]
 			) <= 35.0:
 
-				collected_id = int(food_id)
+				collected_id = food_id
+
 				break
 
 		if collected_id != -1:
+
 			_collect_food(
-				collected_id,
-				player_id
+				peer_id,
+				collected_id
 			)
 
 
 func _collect_food(
-	food_id: int,
-	player_id: int
+	peer_id: int,
+	food_id: int
 ) -> void:
 
-	if not foods.has(food_id):
+	if not food.has(food_id):
 		return
 
-	var value := int(foods[food_id].get("value", 1))
+	if not players.has(peer_id):
+		return
 
-	foods.erase(food_id)
+	var food_item: Dictionary = food[
+		food_id
+	]
+
+	food.erase(
+		food_id
+	)
+
+	var player: Dictionary = players[
+		peer_id
+	]
+
+	player["length"] = int(
+		player["length"]
+	) + int(
+		food_item["value"]
+	)
+
+	players[peer_id] = player
 
 	food_collected_rpc.rpc(
 		food_id,
-		player_id,
-		value
+		peer_id,
+		int(food_item["value"])
 	)
-
-	_spawn_food()
-
-
-@rpc("authority", "call_remote", "reliable")
-func food_collected_rpc(
-	food_id: int,
-	collector_id: int,
-	value: int
-) -> void:
-
-	foods.erase(food_id)
 
 	food_collected_signal.emit(
 		food_id,
-		collector_id,
+		peer_id,
+		int(food_item["value"])
+	)
+
+
+@rpc("authority", "reliable")
+func food_collected_rpc(
+	food_id: int,
+	peer_id: int,
+	value: int
+) -> void:
+
+	food.erase(
+		food_id
+	)
+
+	food_collected_signal.emit(
+		food_id,
+		peer_id,
 		value
 	)
 
@@ -858,191 +2108,611 @@ func food_collected_rpc(
 # =========================================================
 
 func _spawn_death_loot(
-	death_position: Vector2,
-	length: int
+	victim_id: int
 ) -> void:
 
+	if not players.has(victim_id):
+		return
+
+	var victim: Dictionary = players[
+		victim_id
+	]
+
 	var amount := min(
-		MAX_DEATH_LOOT,
-		max(1, length * LOOT_PER_SEGMENT)
+		int(victim["length"]) * DEATH_LOOT_PER_SEGMENT,
+		MAX_DEATH_LOOT
 	)
 
 	for i in range(amount):
-		var loot_id := next_loot_id
-		next_loot_id += 1
 
-		var angle := randf() * TAU
-		var distance := randf_range(20.0, 130.0)
+		var offset := Vector2(
+			randf_range(
+				-120.0,
+				120.0
+			),
+			randf_range(
+				-120.0,
+				120.0
+			)
+		)
 
-		var position_value := death_position + Vector2(
-			cos(angle),
-			sin(angle)
-		) * distance
-
-		var loot := {
-			"id": loot_id,
-			"position": position_value,
-			"coins": LOOT_COIN_VALUE,
-			"xp": LOOT_XP_VALUE
-		}
-
-		death_loot[loot_id] = loot
-
-		loot_spawned_rpc.rpc(
-			loot_id,
-			position_value,
+		_spawn_loot(
+			victim["position"] + offset,
 			LOOT_COIN_VALUE,
 			LOOT_XP_VALUE
 		)
 
 
-@rpc("authority", "call_remote", "reliable")
+# =========================================================
+# SPAWN LOOT
+# =========================================================
+
+func _spawn_loot(
+	position: Vector2,
+	coins: int,
+	xp: int
+) -> int:
+
+	loot_counter += 1
+
+	var loot_id := loot_counter
+
+	loot[loot_id] = {
+		"id": loot_id,
+		"position": position,
+		"coins": coins,
+		"xp": xp
+	}
+
+	loot_spawned_rpc.rpc(
+		loot_id,
+		position,
+		coins,
+		xp
+	)
+
+	loot_spawned_signal.emit(
+		loot_id,
+		position,
+		coins,
+		xp
+	)
+
+	return loot_id
+
+
+@rpc("authority", "reliable")
 func loot_spawned_rpc(
 	loot_id: int,
-	position_value: Vector2,
+	position: Vector2,
 	coins: int,
 	xp: int
 ) -> void:
 
-	death_loot[loot_id] = {
+	loot[loot_id] = {
 		"id": loot_id,
-		"position": position_value,
+		"position": position,
 		"coins": coins,
 		"xp": xp
 	}
 
 	loot_spawned_signal.emit(
 		loot_id,
-		position_value,
+		position,
 		coins,
 		xp
 	)
 
 
-func _check_loot_collections() -> void:
-	for player_id in players:
-		if not players[player_id].get("alive", false):
-			continue
+# =========================================================
+# LOOT COLLECTION
+# =========================================================
 
-		var player_position: Vector2 = players[player_id].get(
-			"position",
-			Vector2.ZERO
+func collect_loot(
+	loot_id: int
+) -> void:
+
+	if is_server:
+
+		_collect_loot(
+			local_player_id,
+			loot_id
 		)
 
-		var collected_id := -1
+	else:
 
-		for loot_id in death_loot:
-			var loot: Dictionary = death_loot[loot_id]
+		request_collect_loot.rpc_id(
+			1,
+			loot_id
+		)
 
-			if player_position.distance_to(
-				loot["position"]
-			) <= 35.0:
 
-				collected_id = int(loot_id)
-				break
+@rpc("any_peer", "reliable")
+func request_collect_loot(
+	loot_id: int
+) -> void:
 
-		if collected_id != -1:
-			_collect_loot(
-				collected_id,
-				player_id
-			)
+	if not is_server:
+		return
+
+	var sender_id := multiplayer.get_remote_sender_id()
+
+	_collect_loot(
+		sender_id,
+		loot_id
+	)
 
 
 func _collect_loot(
-	loot_id: int,
-	player_id: int
+	peer_id: int,
+	loot_id: int
 ) -> void:
 
-	if not death_loot.has(loot_id):
+	if not loot.has(loot_id):
 		return
 
-	var loot: Dictionary = death_loot[loot_id]
+	if not players.has(peer_id):
+		return
 
-	var coins := int(loot.get("coins", 0))
-	var xp := int(loot.get("xp", 0))
+	var loot_item: Dictionary = loot[
+		loot_id
+	]
 
-	death_loot.erase(loot_id)
+	var player: Dictionary = players[
+		peer_id
+	]
+
+	if player["position"].distance_to(
+		loot_item["position"]
+	) > 70.0:
+
+		return
+
+	loot.erase(
+		loot_id
+	)
 
 	loot_collected_rpc.rpc(
 		loot_id,
-		player_id,
-		coins,
-		xp
+		peer_id,
+		loot_item["coins"],
+		loot_item["xp"]
+	)
+
+	loot_collected_signal.emit(
+		loot_id,
+		peer_id,
+		loot_item["coins"],
+		loot_item["xp"]
 	)
 
 
-@rpc("authority", "call_remote", "reliable")
+@rpc("authority", "reliable")
 func loot_collected_rpc(
 	loot_id: int,
-	collector_id: int,
+	peer_id: int,
 	coins: int,
 	xp: int
 ) -> void:
 
-	death_loot.erase(loot_id)
+	loot.erase(
+		loot_id
+	)
 
-	if collector_id == multiplayer.get_unique_id():
-		Global.add_coins(coins)
-		Global.add_experience(xp)
+	if peer_id == local_player_id:
+
+		Global.add_coins(
+			coins
+		)
+
+		Global.add_experience(
+			xp
+		)
 
 	loot_collected_signal.emit(
 		loot_id,
-		collector_id,
+		peer_id,
 		coins,
 		xp
 	)
 
 
 # =========================================================
-# CLEANUP
+# LEADERBOARD
 # =========================================================
 
-func _cleanup_processed_deaths() -> void:
-	var now := Time.get_ticks_msec()
+func _send_leaderboard() -> void:
 
-	for id in processed_deaths.keys():
-		if now - int(processed_deaths[id]) > 3000:
-			processed_deaths.erase(id)
+	if players.is_empty():
+		return
+
+	var leaderboard: Array = []
+
+	for peer_id in players.keys():
+
+		var player: Dictionary = players[
+			peer_id
+		]
+
+		leaderboard.append({
+			"id": peer_id,
+			"name": player["name"],
+			"length": player["length"],
+			"kills": player["kills"],
+			"deaths": player["deaths"],
+			"alive": player["alive"],
+			"room": player["room"]
+		})
+
+	leaderboard.sort_custom(
+		_sort_leaderboard
+	)
+
+	current_leaderboard = leaderboard
+
+	leaderboard_rpc.rpc(
+		leaderboard
+	)
+
+	leaderboard_updated_signal.emit(
+		leaderboard
+	)
+
+
+func _sort_leaderboard(
+	a: Dictionary,
+	b: Dictionary
+) -> bool:
+
+	if a["length"] != b["length"]:
+
+		return int(a["length"]) > int(
+			b["length"]
+		)
+
+	if a["kills"] != b["kills"]:
+
+		return int(a["kills"]) > int(
+			b["kills"]
+		)
+
+	return int(a["id"]) < int(
+		b["id"]
+	)
+
+
+@rpc("authority", "reliable")
+func leaderboard_rpc(
+	leaderboard: Array
+) -> void:
+
+	current_leaderboard = leaderboard
+
+	leaderboard_updated_signal.emit(
+		leaderboard
+	)
 
 
 # =========================================================
-# HELPERS
+# GET LEADERBOARD
+# =========================================================
+
+func get_current_leaderboard() -> Array:
+
+	return current_leaderboard.duplicate(
+		true
+	)
+
+
+# =========================================================
+# GET PLAYER RANK
+# =========================================================
+
+func get_player_rank(
+	peer_id: int = -1
+) -> int:
+
+	if peer_id == -1:
+		peer_id = local_player_id
+
+	for i in range(
+		current_leaderboard.size()
+	):
+
+		if int(
+			current_leaderboard[i]["id"]
+		) == peer_id:
+
+			return i + 1
+
+	return 0
+
+
+# =========================================================
+# GET PLAYER COUNT
 # =========================================================
 
 func get_player_count() -> int:
+
+	if current_room_code != "" and rooms.has(
+		current_room_code
+	):
+
+		var room: Dictionary = rooms[
+			current_room_code
+		]
+
+		if room.has("players"):
+
+			if room["players"] is Array:
+				return room["players"].size()
+
+			return int(
+				room["players"]
+			)
+
 	return players.size()
 
 
-func get_local_player() -> Dictionary:
-	if players.has(local_player_id):
-		return players[local_player_id]
+# =========================================================
+# GET ROOM INFO
+# =========================================================
 
-	return {}
+func get_current_room_info() -> Dictionary:
+
+	if current_room_code == "":
+		return {}
+
+	if not rooms.has(
+		current_room_code
+	):
+
+		return {
+			"code": current_room_code,
+			"name": current_room_name,
+			"max_players": current_room_max_players,
+			"started": current_room_started
+		}
+
+	return rooms[
+		current_room_code
+	]
 
 
-func get_player_data(peer_id: int) -> Dictionary:
-	if players.has(peer_id):
-		return players[peer_id]
+# =========================================================
+# IS IN ROOM
+# =========================================================
 
-	return {}
+func is_in_room() -> bool:
+
+	return current_room_code != ""
 
 
-func is_player_alive(peer_id: int) -> bool:
-	if not players.has(peer_id):
+# =========================================================
+# IS ROOM HOST
+# =========================================================
+
+func is_room_host() -> bool:
+
+	if current_room_code == "":
 		return false
 
-	return bool(players[peer_id].get("alive", false))
+	if not rooms.has(
+		current_room_code
+	):
+
+		if is_server:
+			return true
+
+		return false
+
+	var room: Dictionary = rooms[
+		current_room_code
+	]
+
+	return int(
+		room.get(
+			"host_id",
+			-1
+		)
+	) == local_player_id
 
 
-func get_kills(peer_id: int) -> int:
-	if not players.has(peer_id):
-		return 0
+# =========================================================
+# GET ROOM CODE
+# =========================================================
 
-	return int(players[peer_id].get("kills", 0))
+func get_room_code() -> String:
+
+	return current_room_code
 
 
-func get_deaths(peer_id: int) -> int:
-	if not players.has(peer_id):
-		return 0
+# =========================================================
+# GENERATE ROOM CODE
+# =========================================================
 
-	return int(players[peer_id].get("deaths", 0))
+func _generate_room_code() -> String:
+
+	const chars := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+	var result := ""
+
+	for i in range(
+		ROOM_CODE_LENGTH
+	):
+
+		result += chars[
+			randi() % chars.length()
+		]
+
+	return result
+
+
+# =========================================================
+# PROCESS ROOMS
+# =========================================================
+
+func _process_rooms(
+	_delta: float
+) -> void:
+
+	if not is_server:
+		return
+
+	var rooms_to_delete: Array = []
+
+	for code in rooms.keys():
+
+		var room: Dictionary = rooms[
+			code
+		]
+
+		var room_players: Array = room[
+			"players"
+		]
+
+		# تنظيف اللاعبين غير الموجودين
+		var valid_players: Array = []
+
+		for peer_id in room_players:
+
+			if players.has(peer_id):
+
+				valid_players.append(
+					peer_id
+				)
+
+		room["players"] = valid_players
+
+		# حذف الغرفة الفارغة
+		if valid_players.is_empty():
+
+			rooms_to_delete.append(
+				code
+			)
+
+		else:
+
+			if not room["started"]:
+
+				# لا شيء
+
+				pass
+
+			rooms[code] = room
+
+	for code in rooms_to_delete:
+
+		rooms.erase(
+			code
+		)
+
+
+# =========================================================
+# CLOSE CONNECTION
+# =========================================================
+
+func close_connection() -> void:
+
+	if multiplayer.has_multiplayer_peer():
+
+		multiplayer.multiplayer_peer = null
+
+	peer = null
+
+	is_server = false
+
+	is_connected_to_server = false
+
+	local_player_id = 0
+
+	current_room_code = ""
+
+	current_room_name = ""
+
+	current_room_started = false
+
+	matchmaking_active = false
+
+	players.clear()
+
+	rooms.clear()
+
+	food.clear()
+
+	loot.clear()
+
+	current_leaderboard.clear()
+
+
+# =========================================================
+# DISCONNECT
+# =========================================================
+
+func disconnect_from_server() -> void:
+
+	close_connection()
+
+
+# =========================================================
+# FULL BODY COLLISION HELPER
+# =========================================================
+
+func check_body_collision(
+	head_position: Vector2,
+	body_positions: Array
+) -> bool:
+
+	for body_position in body_positions:
+
+		if head_position.distance_to(
+			body_position
+		) <= BODY_COLLISION_DISTANCE:
+
+			return true
+
+	return false
+
+
+# =========================================================
+# DEBUG
+# =========================================================
+
+func print_network_status() -> void:
+
+	print(
+		"=============================="
+	)
+
+	print(
+		"Network Status"
+	)
+
+	print(
+		"Server: ",
+		is_server
+	)
+
+	print(
+		"Connected: ",
+		is_connected_to_server
+	)
+
+	print(
+		"Local ID: ",
+		local_player_id
+	)
+
+	print(
+		"Room: ",
+		current_room_code
+	)
+
+	print(
+		"Players: ",
+		get_player_count()
+	)
+
+	print(
+		"=============================="
+	)
