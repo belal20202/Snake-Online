@@ -1,60 +1,23 @@
-# Godot 4+ editor data
 .godot/
-
-# Godot generated files
-*.tmp
-*.temp
-
-# Exported builds
-*.apk
-*.aab
-*.exe
-*.app
-*.zip
-
-# Android build files
-android/.gradle/
-android/build/
-android/app/build/
-.gradle/
+.import/
+export/
 build/
-captures/
+dist/
+bin/
 
-# IDE files
 .vscode/
 .idea/
-*.iml
 
-# Operating system files
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Logs
+*.tmp
 *.log
 
-# Temporary files
-*.bak
-*.swp
-*.swo
+*.apk
+*.aab
 
-# Python
-__pycache__/
-*.pyc
-
-# Node
-node_modules/
-
-# Local environment
-.env
-.env.*
-!.env.example
-
-# Secrets
 *.keystore
 *.jks
-*.p12
-*.pem
 
-# AdMob / signing secrets
-secrets/
+.env
+
+.DS_Store
+Thumbs.db
