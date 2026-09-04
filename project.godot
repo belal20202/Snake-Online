@@ -5,12 +5,14 @@
 config_version=5
 
 [application]
+
 config/name="Snake Arab Online"
 config/description="لعبة ثعبان عربية متعددة اللاعبين"
 run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.5", "GL Compatibility")
 
 [display]
+
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/size/window_width_override=1280
@@ -18,41 +20,50 @@ window/size/window_height_override=720
 window/stretch/mode="canvas_items"
 
 [rendering]
+
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 
 [gui]
-theme/default_font_multichannel_signed_distance_field=true
 
-[input]
-move_up={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":87)]
-}
-move_down={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":83)]
-}
-move_left={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":65)]
-}
-move_right={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":68)]
-}
-boost={
-"deadzone": 0.5,
-"events": [Object(InputEventKey,"physical_keycode":32)]
-}
+theme/default_font_multichannel_signed_distance_field=true
 
 [autoload]
 
 Global="*res://scripts/global.gd"
 Network="*res://scripts/network.gd"
 
+[input]
+
+move_up={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":87)]
+}
+
+move_down={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":83)]
+}
+
+move_left={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":65)]
+}
+
+move_right={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":68)]
+}
+
+boost={
+"deadzone": 0.5,
+"events": [Object(InputEventKey,"physical_keycode":32)]
+}
+
 [physics]
+
 common/physics_ticks_per_second=60
 
-[rendering/environment]
-defaults/default_clear_color=Color(0.035, 0.035, 0.055, 1)
+[environment]
+
+default_clear_color=Color(0.035, 0.035, 0.055, 1)
