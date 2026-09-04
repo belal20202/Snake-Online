@@ -18,48 +18,24 @@ jobs:
 
     steps:
 
-      # -----------------------------------------
-      # 1. تحميل المشروع
-      # -----------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-
-      # -----------------------------------------
-      # 2. Java 17
-      # -----------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-
-      # -----------------------------------------
-      # 3. Android SDK
-      # -----------------------------------------
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-
-      # -----------------------------------------
-      # 4. تثبيت Android SDK
-      # -----------------------------------------
-      - name: Install Android SDK components
+      - name: Install Android SDK
         shell: bash
         run: |
           set -e
 
-          sdkmanager --licenses <<EOF || true
-          y
-          y
-          y
-          y
-          y
-          y
-          y
-          y
-          EOF
+          yes | sdkmanager --licenses || true
 
           sdkmanager \
             "platform-tools" \
@@ -69,10 +45,6 @@ jobs:
             "cmake;3.10.2.4988404" \
             "ndk;28.1.13356709"
 
-
-      # -----------------------------------------
-      # 5. فحص Android SDK
-      # -----------------------------------------
       - name: Verify Android SDK
         shell: bash
         run: |
@@ -81,25 +53,33 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
 
           test -d "$ANDROID_HOME"
-
           test -f "$ANDROID_HOME/platform-tools/adb"
-
           test -f "$ANDROID_HOME/build-tools/35.0.0/apksigner"
 
           echo "Android SDK OK"
+          adb version
 
-          "$ANDROID_HOME/platform-tools/adb" version
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: 4.5.1
+          use-dotnet: false
+          include-templates: true
 
+      - name: Verify Godot
+        shell: bash
+        run: |
+          set -e
+          godot --version
 
-      # -----------------------------------------
-      # 6. إنشاء Debug Keystore
-      # -----------------------------------------
-      - name: Create Android Debug Keystore
+      - name: Create Debug Keystore
         shell: bash
         run: |
           set -e
 
           mkdir -p "$HOME/.android"
+
+          rm -f "$HOME/.android/debug.keystore"
 
           keytool \
             -genkeypair \
@@ -116,13 +96,9 @@ jobs:
 
           test -f "$HOME/.android/debug.keystore"
 
-          echo "Debug keystore created."
+          echo "Debug keystore OK"
 
-
-      # -----------------------------------------
-      # 7. إعداد Godot Editor Settings
-      # -----------------------------------------
-      - name: Configure Godot Android Settings
+      - name: Configure Godot Android
         shell: bash
         run: |
           set -e
@@ -140,73 +116,32 @@ jobs:
           export/android/debug_keystore = "$HOME/.android/debug.keystore"
           export/android/debug_keystore_user = "androiddebugkey"
           export/android/debug_keystore_pass = "android"
-
-          export/android/sdk_path = "$ANDROID_HOME"
           EOF
 
-          echo "Godot Android settings created."
-
+          echo "Godot Android configuration:"
           cat "$HOME/.config/godot/editor_settings-4.tres"
 
-
-      # -----------------------------------------
-      # 8. تثبيت Godot
-      # -----------------------------------------
-      - name: Setup Godot 4.5.1
-        uses: chickensoft-games/setup-godot@v2
-        with:
-          version: 4.5.1
-          use-dotnet: false
-          include-templates: true
-
-
-      # -----------------------------------------
-      # 9. فحص Godot
-      # -----------------------------------------
-      - name: Verify Godot
-        shell: bash
-        run: |
-          set -e
-
-          godot --version
-
-          echo "Godot OK"
-
-
-      # -----------------------------------------
-      # 10. فحص ملفات المشروع
-      # -----------------------------------------
-      - name: Verify Project
+      - name: Verify Project Files
         shell: bash
         run: |
           set -e
 
           test -f project.godot
-
           test -f export_presets.cfg
 
           echo "project.godot OK"
           echo "export_presets.cfg OK"
 
-
-      # -----------------------------------------
-      # 11. فحص Android Preset
-      # -----------------------------------------
       - name: Verify Android Preset
         shell: bash
         run: |
           set -e
 
           grep -q 'name="Android"' export_presets.cfg
-
           grep -q 'platform="Android"' export_presets.cfg
 
           echo "Android preset OK"
 
-
-      # -----------------------------------------
-      # 12. فحص Export Templates
-      # -----------------------------------------
       - name: Verify Export Templates
         shell: bash
         run: |
@@ -214,31 +149,14 @@ jobs:
 
           TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/4.5.1.stable"
 
-          echo "Templates:"
+          echo "Checking:"
           echo "$TEMPLATE_DIR"
 
-          if [ ! -f "$TEMPLATE_DIR/android_debug.apk" ]; then
-            echo "ERROR: android_debug.apk not found."
+          test -f "$TEMPLATE_DIR/android_debug.apk"
+          test -f "$TEMPLATE_DIR/android_release.apk"
 
-            find "$HOME/.local/share/godot" \
-              -type f \
-              \( -name "android_debug.apk" -o -name "android_release.apk" \) \
-              -print || true
+          echo "Android export templates OK"
 
-            exit 1
-          fi
-
-          if [ ! -f "$TEMPLATE_DIR/android_release.apk" ]; then
-            echo "ERROR: android_release.apk not found."
-            exit 1
-          fi
-
-          echo "Android export templates OK."
-
-
-      # -----------------------------------------
-      # 13. Import المشروع
-      # -----------------------------------------
       - name: Import Godot Project
         shell: bash
         run: |
@@ -250,60 +168,46 @@ jobs:
             --editor \
             --quit
 
-          echo "Godot project imported."
+          echo "Project imported successfully."
 
-
-      # -----------------------------------------
-      # 14. إنشاء مجلد Build
-      # -----------------------------------------
       - name: Prepare Build
         shell: bash
         run: |
           set -e
 
           mkdir -p build
-
           rm -f build/SnakeArabOnline.apk
 
-          echo "Build directory ready."
-
-
-      # -----------------------------------------
-      # 15. اختبار إعدادات Android قبل التصدير
-      # -----------------------------------------
-      - name: Check Android Export Configuration
+      - name: Check Android Environment
         shell: bash
         run: |
           set -e
 
-          echo "Java:"
+          echo "========== JAVA =========="
           java -version
 
           echo ""
-          echo "Android SDK:"
+          echo "========== ANDROID SDK =========="
           echo "$ANDROID_HOME"
 
           echo ""
-          echo "ADB:"
+          echo "========== ADB =========="
           adb version
 
           echo ""
-          echo "Debug keystore:"
+          echo "========== APKSIGNER =========="
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" --version
+
+          echo ""
+          echo "========== KEYSTORE =========="
           ls -lh "$HOME/.android/debug.keystore"
 
-          echo ""
-          echo "Build tools:"
-          ls -lh "$ANDROID_HOME/build-tools/35.0.0/apksigner"
-
-          echo ""
-          echo "Android configuration looks ready."
-
-
-      # -----------------------------------------
-      # 16. بناء APK
-      # -----------------------------------------
       - name: Build APK
         shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ env.HOME }}/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set -e
 
@@ -319,10 +223,6 @@ jobs:
             "Android" \
             "build/SnakeArabOnline.apk"
 
-
-      # -----------------------------------------
-      # 17. التأكد من APK
-      # -----------------------------------------
       - name: Verify APK
         shell: bash
         run: |
@@ -340,16 +240,12 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "       APK CREATED SUCCESSFULLY"
+          echo "APK CREATED SUCCESSFULLY"
           echo "======================================"
 
           ls -lh build/SnakeArabOnline.apk
 
-
-      # -----------------------------------------
-      # 18. رفع APK
-      # -----------------------------------------
-      - name: Upload APK Artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: SnakeArabOnline-APK
