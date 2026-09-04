@@ -1,10 +1,11 @@
 extends Node2D
 
-# =========================================================
+# ============================================================
 # Snake Arab Online
-# Main Game
-# Step 6.6.8
-# =========================================================
+# Game Controller
+# Step 6.6.9
+# نظام الموت والقتل والجوائز
+# ============================================================
 
 const MAP_SIZE := Vector2(
 	4000.0,
@@ -12,130 +13,89 @@ const MAP_SIZE := Vector2(
 )
 
 const FOOD_COUNT := 180
-
 const FOOD_RADIUS := 9.0
 
-const FOOD_COLLECTION_DISTANCE := 48.0
-
-# =========================================================
-# PLAYER
-# =========================================================
+const LOCAL_STATE_INTERVAL := 0.05
 
 var snake: Node2D
 
-var remote_snakes: Dictionary = {}
-
-# =========================================================
-# LOCAL FOOD
-# =========================================================
-
 var foods: Array[Node2D] = []
 
-# =========================================================
-# NETWORK FOOD
-# =========================================================
+var remote_snakes: Dictionary = {}
 
 var network_foods: Dictionary = {}
-
 var network_loot: Dictionary = {}
 
 var network_food_nodes: Dictionary = {}
-
 var network_loot_nodes: Dictionary = {}
 
-# =========================================================
-# GAME STATE
-# =========================================================
+
+# ============================================================
+# Game state
+# ============================================================
 
 var score := 0
-
-var game_coins := 0
-
-var game_xp := 0
-
 var game_over := false
-
 var paused := false
+
+var kills := 0
+var deaths := 0
+
+var last_killer_id := -1
 
 var state_timer := 0.0
 
-# =========================================================
-# SPAWN
-# =========================================================
+var respawn_timer := 0.0
+var can_respawn := false
 
-var local_spawn_position := Vector2(
-	2000.0,
-	2000.0
-)
+const RESPAWN_DELAY := 2.5
 
-# =========================================================
-# CAMERA
-# =========================================================
+
+# ============================================================
+# UI
+# ============================================================
+
+var score_label: Label
+var length_label: Label
+var kills_label: Label
+var players_label: Label
+
+var pause_button: Button
+var game_over_panel: Panel
+
+var notification_label: Label
 
 var camera: Camera2D
 
-# =========================================================
-# UI
-# =========================================================
 
-var score_label: Label
-
-var length_label: Label
-
-var players_label: Label
-
-var coins_label: Label
-
-var pause_button: Button
-
-var game_over_panel: Panel
-
-# =========================================================
-# READY
-# =========================================================
+# ============================================================
+# Ready
+# ============================================================
 
 func _ready() -> void:
+
+	add_to_group("game")
 
 	randomize()
 
 	_create_background()
 
+	_create_food()
+
 	_create_local_player()
 
 	_create_ui()
 
-	_connect_network_signals()
-
-	_sync_existing_players()
-
-
-# =========================================================
-# PROCESS
-# =========================================================
-
-func _process(delta: float) -> void:
-
-	if snake == null:
-		return
-
-	if not game_over and not paused:
-
-		_check_food_collision()
-
-		_check_map_collision()
-
-		_send_network_state(delta)
-
-	_update_ui()
+	_connect_network()
 
 	queue_redraw()
 
 
-# =========================================================
-# NETWORK SIGNALS
-# =========================================================
+# ============================================================
+# Network connections
+# ============================================================
 
-func _connect_network_signals() -> void:
+func _connect_network() -> void:
 
 	var network := get_node_or_null(
 		"/root/Network"
@@ -144,42 +104,134 @@ func _connect_network_signals() -> void:
 	if network == null:
 		return
 
-	if not network.player_joined.is_connected(
-		_on_network_player_joined
+	if network.has_signal(
+		"players_synced_signal"
 	):
 
-		network.player_joined.connect(
-			_on_network_player_joined
+		network.players_synced_signal.connect(
+			_on_players_synced
 		)
 
-	if not network.player_left.is_connected(
-		_on_network_player_left
+	if network.has_signal(
+		"player_joined_signal"
 	):
 
-		network.player_left.connect(
-			_on_network_player_left
-	)
+		network.player_joined_signal.connect(
+			_on_player_joined
+		)
 
-	if not network.player_died.is_connected(
-		_on_network_player_died
+	if network.has_signal(
+		"player_left_signal"
 	):
 
-		network.player_died.connect(
-			_on_network_player_died
-	)
+		network.player_left_signal.connect(
+			_on_player_left
+		)
 
-	if not network.player_respawned.is_connected(
-		_on_network_player_respawned
+	if network.has_signal(
+		"player_died_signal"
 	):
 
-		network.player_respawned.connect(
-			_on_network_player_respawned
-	)
+		network.player_died_signal.connect(
+			_on_player_died
+		)
+
+	if network.has_signal(
+		"player_respawned_signal"
+	):
+
+		network.player_respawned_signal.connect(
+			_on_player_respawned
+		)
+
+	if network.has_signal(
+		"food_spawned_signal"
+	):
+
+		network.food_spawned_signal.connect(
+			_on_food_spawned
+		)
+
+	if network.has_signal(
+		"loot_spawned_signal"
+	):
+
+		network.loot_spawned_signal.connect(
+			_on_loot_spawned
+		)
+
+	if network.has_signal(
+		"food_collected_signal"
+	):
+
+		network.food_collected_signal.connect(
+			_on_food_collected
+		)
+
+	if network.has_signal(
+		"loot_collected_signal"
+	):
+
+		network.loot_collected_signal.connect(
+			_on_loot_collected
+		)
 
 
-# =========================================================
-# BACKGROUND
-# =========================================================
+# ============================================================
+# Process
+# ============================================================
+
+func _process(delta: float) -> void:
+
+	if snake == null:
+		return
+
+	if game_over:
+
+		if can_respawn:
+
+			respawn_timer += delta
+
+			if respawn_timer >= RESPAWN_DELAY:
+
+				can_respawn = false
+
+				_request_respawn()
+
+		_update_ui()
+
+		queue_redraw()
+
+		return
+
+	if paused:
+
+		_update_ui()
+
+		queue_redraw()
+
+		return
+
+	state_timer += delta
+
+	if state_timer >= LOCAL_STATE_INTERVAL:
+
+		state_timer = 0.0
+
+		_send_local_state()
+
+	_check_local_map_collision()
+
+	_update_camera()
+
+	_update_ui()
+
+	queue_redraw()
+
+
+# ============================================================
+# Background
+# ============================================================
 
 func _create_background() -> void:
 
@@ -193,13 +245,9 @@ func _create_background() -> void:
 		"#111827"
 	)
 
-	background.mouse_filter = (
-		Control.MOUSE_FILTER_IGNORE
-	)
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	add_child(
-		background
-	)
+	add_child(background)
 
 	move_child(
 		background,
@@ -207,9 +255,9 @@ func _create_background() -> void:
 	)
 
 
-# =========================================================
-# DRAW MAP
-# =========================================================
+# ============================================================
+# Draw map
+# ============================================================
 
 func _draw() -> void:
 
@@ -231,10 +279,7 @@ func _draw() -> void:
 
 		draw_line(
 			Vector2(x, 0),
-			Vector2(
-				x,
-				MAP_SIZE.y
-			),
+			Vector2(x, MAP_SIZE.y),
 			Color(
 				0.12,
 				0.16,
@@ -252,10 +297,7 @@ func _draw() -> void:
 
 		draw_line(
 			Vector2(0, y),
-			Vector2(
-				MAP_SIZE.x,
-				y
-			),
+			Vector2(MAP_SIZE.x, y),
 			Color(
 				0.12,
 				0.16,
@@ -267,38 +309,10 @@ func _draw() -> void:
 
 		y += grid_size
 
-	# Center safe zone
 
-	draw_circle(
-		MAP_SIZE / 2.0,
-		180.0,
-		Color(
-			0.1,
-			0.35,
-			0.25,
-			0.15
-		)
-	)
-
-	draw_arc(
-		MAP_SIZE / 2.0,
-		180.0,
-		0.0,
-		TAU,
-		64,
-		Color(
-			0.2,
-			0.9,
-			0.55,
-			0.35
-		),
-		3.0
-	)
-
-
-# =========================================================
-# LOCAL PLAYER
-# =========================================================
+# ============================================================
+# Local player
+# ============================================================
 
 func _create_local_player() -> void:
 
@@ -316,28 +330,46 @@ func _create_local_player() -> void:
 
 	snake = snake_scene.instantiate()
 
-	snake.position = (
-		local_spawn_position
+	var network := get_node_or_null(
+		"/root/Network"
 	)
 
-	add_child(
-		snake
-	)
+	var spawn_position := MAP_SIZE / 2.0
 
-	if snake.has_method(
-		"setup"
-	):
+	if network != null:
+
+		if network.is_host:
+
+			spawn_position = network.players.get(
+				multiplayer.get_unique_id(),
+				{}
+			).get(
+				"position",
+				spawn_position
+			)
+
+	snake.position = spawn_position
+
+	add_child(snake)
+
+	if snake.has_method("setup"):
+
+		var player_name := Global.player_name
+
+		if player_name.is_empty():
+
+			player_name = "لاعب"
 
 		snake.setup(
-			Global.player_name
+			player_name
 		)
 
 	_create_camera()
 
 
-# =========================================================
-# CAMERA
-# =========================================================
+# ============================================================
+# Camera
+# ============================================================
 
 func _create_camera() -> void:
 
@@ -346,7 +378,7 @@ func _create_camera() -> void:
 
 	camera = Camera2D.new()
 
-	camera.name = "PlayerCamera"
+	camera.name = "GameCamera"
 
 	camera.position = Vector2.ZERO
 
@@ -358,581 +390,31 @@ func _create_camera() -> void:
 
 	camera.limit_top = 0
 
-	camera.limit_right = int(
-		MAP_SIZE.x
-	)
+	camera.limit_right = int(MAP_SIZE.x)
 
-	camera.limit_bottom = int(
-		MAP_SIZE.y
-	)
+	camera.limit_bottom = int(MAP_SIZE.y)
 
-	snake.add_child(
-		camera
-	)
+	snake.add_child(camera)
 
 
-# =========================================================
-# SET LOCAL SPAWN
-# =========================================================
+func _update_camera() -> void:
 
-func set_local_spawn(
-	spawn_position: Vector2
-) -> void:
-
-	local_spawn_position = spawn_position
+	if camera == null:
+		return
 
 	if snake == null:
 		return
 
-	snake.global_position = (
-		spawn_position
-	)
+	camera.position = Vector2.ZERO
 
-	if snake.has_method(
-		"revive"
-	):
 
-		snake.revive()
-
-	game_over = false
-
-	score = 0
-
-
-# =========================================================
-# NETWORK STATE
-# =========================================================
-
-func _send_network_state(
-	delta: float
-) -> void:
-
-	state_timer += delta
-
-	if state_timer < 0.05:
-		return
-
-	state_timer = 0.0
-
-	var network := get_node_or_null(
-		"/root/Network"
-	)
-
-	if network == null:
-		return
-
-	if not network.has_method(
-		"broadcast_player_state"
-	):
-
-		return
-
-	var position := snake.global_position
-
-	var direction := Vector2.RIGHT
-
-	if "direction" in snake:
-		direction = snake.direction
-
-	var length := 10
-
-	if snake.has_method(
-		"get_length"
-	):
-
-		length = snake.get_length()
-
-	var alive := true
-
-	if snake.has_method(
-		"get_is_alive"
-	):
-
-		alive = snake.get_is_alive()
-
-	var body_points: Array = []
-
-	if snake.has_method(
-		"get_body_points"
-	):
-
-		body_points = snake.get_body_points()
-
-	network.broadcast_player_state(
-		position,
-		direction,
-		length,
-		alive,
-		body_points
-	)
-
-
-# =========================================================
-# SYNC EXISTING PLAYERS
-# =========================================================
-
-func _sync_existing_players() -> void:
-
-	var network := get_node_or_null(
-		"/root/Network"
-	)
-
-	if network == null:
-		return
-
-	if not network.is_host:
-		return
-
-	for peer_id in network.connected_players.keys():
-
-		if peer_id == multiplayer.get_unique_id():
-			continue
-
-		var data: Dictionary = (
-			network.connected_players[
-				peer_id
-			]
-		)
-
-		_create_remote_snake(
-			peer_id,
-			str(
-				data.get(
-					"name",
-					"لاعب"
-				)
-			),
-			data.get(
-				"spawn",
-				Vector2.ZERO
-			)
-		)
-
-
-# =========================================================
-# NETWORK PLAYER JOINED
-# =========================================================
-
-func _on_network_player_joined(
-	peer_id: int,
-	new_name: String
-) -> void:
-
-	var network := get_node_or_null(
-		"/root/Network"
-	)
-
-	var spawn := Vector2.ZERO
-
-	if network and network.player_spawns.has(
-		peer_id
-	):
-
-		spawn = network.player_spawns[
-			peer_id
-		]
-
-	_create_remote_snake(
-		peer_id,
-		new_name,
-		spawn
-	)
-
-
-func network_player_joined(
-	peer_id: int,
-	new_name: String,
-	spawn_position: Vector2
-) -> void:
-
-	_create_remote_snake(
-		peer_id,
-		new_name,
-		spawn_position
-	)
-
-
-# =========================================================
-# CREATE REMOTE SNAKE
-# =========================================================
-
-func _create_remote_snake(
-	peer_id: int,
-	new_name: String,
-	spawn_position: Vector2
-) -> void:
-
-	if peer_id == multiplayer.get_unique_id():
-		return
-
-	if remote_snakes.has(
-		peer_id
-	):
-
-		var existing = remote_snakes[
-			peer_id
-		]
-
-		if is_instance_valid(
-			existing
-		):
-
-			if existing.has_method(
-				"set_player_name"
-			):
-
-				existing.set_player_name(
-					new_name
-				)
-
-			return
-
-		remote_snakes.erase(
-			peer_id
-		)
-
-	var script_resource := load(
-		"res://scripts/remote_snake.gd"
-	)
-
-	if script_resource == null:
-
-		push_error(
-			"remote_snake.gd not found"
-		)
-
-		return
-
-	var remote := Node2D.new()
-
-	remote.set_script(
-		script_resource
-	)
-
-	remote.position = (
-		spawn_position
-	)
-
-	add_child(
-		remote
-	)
-
-	if remote.has_method(
-		"setup"
-	):
-
-		remote.setup(
-			peer_id,
-			new_name,
-			spawn_position
-		)
-
-	remote_snakes[
-		peer_id
-	] = remote
-
-
-# =========================================================
-# UPDATE REMOTE PLAYER
-# =========================================================
-
-func update_remote_player(
-	peer_id: int,
-	player_position: Vector2,
-	player_direction: Vector2,
-	player_length: int,
-	player_alive: bool,
-	player_body: Array = []
-) -> void:
-
-	if peer_id == multiplayer.get_unique_id():
-		return
-
-	if not remote_snakes.has(
-		peer_id
-	):
-
-		_create_remote_snake(
-			peer_id,
-			"لاعب",
-			player_position
-		)
-
-	if not remote_snakes.has(
-		peer_id
-	):
-
-		return
-
-	var remote = remote_snakes[
-		peer_id
-	]
-
-	if not is_instance_valid(
-		remote
-	):
-
-		remote_snakes.erase(
-			peer_id
-		)
-
-		return
-
-	# New remote snake supports body sync
-	if remote.has_method(
-		"update_state"
-	):
-
-		remote.update_state(
-			player_position,
-			player_direction,
-			player_length,
-			player_alive,
-			player_body
-		)
-
-
-# =========================================================
-# REMOTE NAME
-# =========================================================
-
-func update_remote_player_name(
-	peer_id: int,
-	new_name: String
-) -> void:
-
-	if not remote_snakes.has(
-		peer_id
-	):
-
-		return
-
-	var remote = remote_snakes[
-		peer_id
-	]
-
-	if is_instance_valid(
-		remote
-	):
-
-		if remote.has_method(
-			"set_player_name"
-		):
-
-			remote.set_player_name(
-				new_name
-			)
-
-
-# =========================================================
-# PLAYER LEFT
-# =========================================================
-
-func _on_network_player_left(
-	peer_id: int
-) -> void:
-
-	remote_player_left(
-		peer_id
-	)
-
-
-func remote_player_left(
-	peer_id: int
-) -> void:
-
-	if not remote_snakes.has(
-		peer_id
-	):
-
-		return
-
-	var remote = remote_snakes[
-		peer_id
-	]
-
-	if is_instance_valid(
-		remote
-	):
-
-		remote.queue_free()
-
-	remote_snakes.erase(
-		peer_id
-	)
-
-
-# =========================================================
-# NETWORK PLAYERS SYNC
-# =========================================================
-
-func sync_network_players(
-	players: Dictionary
-) -> void:
-
-	for peer_id in players.keys():
-
-		if peer_id == multiplayer.get_unique_id():
-			continue
-
-		var data: Dictionary = players[
-			peer_id
-		]
-
-		_create_remote_snake(
-			peer_id,
-			str(
-				data.get(
-					"name",
-					"لاعب"
-				)
-			),
-			data.get(
-				"spawn",
-				Vector2.ZERO
-			)
-		)
-
-
-# =========================================================
-# PLAYER DIED
-# =========================================================
-
-func _on_network_player_died(
-	peer_id: int,
-	killer_id: int,
-	death_position: Vector2,
-	reward: int
-) -> void:
-
-	network_player_died(
-		peer_id,
-		killer_id,
-		death_position,
-		reward
-	)
-
-
-func network_player_died(
-	peer_id: int,
-	killer_id: int,
-	death_position: Vector2,
-	reward: int
-) -> void:
-
-	# Local player died
-	if peer_id == multiplayer.get_unique_id():
-
-		if snake:
-
-			if snake.has_method(
-				"die"
-			):
-
-				snake.die(
-					"اصطدمت بثعبان آخر"
-				)
-
-		game_over = true
-
-		_show_game_over()
-
-		return
-
-	# Remote player died
-	if remote_snakes.has(
-		peer_id
-	):
-
-		var remote = remote_snakes[
-			peer_id
-		]
-
-		if is_instance_valid(
-			remote
-		):
-
-			if remote.has_method(
-				"die"
-			):
-
-				remote.die()
-
-
-# =========================================================
-# PLAYER RESPAWNED
-# =========================================================
-
-func _on_network_player_respawned(
-	peer_id: int,
-	spawn_position: Vector2
-) -> void:
-
-	network_player_respawned(
-		peer_id,
-		spawn_position
-	)
-
-
-func network_player_respawned(
-	peer_id: int,
-	spawn_position: Vector2
-) -> void:
-
-	if peer_id == multiplayer.get_unique_id():
-
-		if snake:
-
-			snake.global_position = (
-				spawn_position
-			)
-
-			if snake.has_method(
-				"revive"
-			):
-
-				snake.revive()
-
-		game_over = false
-
-		if game_over_panel:
-
-			game_over_panel.queue_free()
-
-			game_over_panel = null
-
-		return
-
-	if remote_snakes.has(
-		peer_id
-	):
-
-		var remote = remote_snakes[
-			peer_id
-		]
-
-		if is_instance_valid(
-			remote
-		):
-
-			if remote.has_method(
-				"respawn"
-			):
-
-				remote.respawn(
-					spawn_position
-				)
-
-
-# =========================================================
-# LOCAL FOOD
-# =========================================================
+# ============================================================
+# Local food fallback
+# ============================================================
 
 func _create_food() -> void:
 
-	for i in range(
-		FOOD_COUNT
-	):
+	for i in range(FOOD_COUNT):
 
 		_spawn_food()
 
@@ -962,45 +444,33 @@ func _spawn_food() -> void:
 		10
 	)
 
-	add_child(
-		food
-	)
+	add_child(food)
 
-	foods.append(
-		food
-	)
+	foods.append(food)
 
 	var visual := FoodVisual.new()
 
 	visual.radius = FOOD_RADIUS
 
-	food.add_child(
-		visual
-	)
+	food.add_child(visual)
 
 
-# =========================================================
-# LOCAL FOOD COLLISION
-# =========================================================
+# ============================================================
+# Local food collision
+# ============================================================
 
 func _check_food_collision() -> void:
 
 	if snake == null:
 		return
 
-	var head_position := (
-		snake.global_position
-	)
+	var head_position := snake.global_position
 
 	for food in foods.duplicate():
 
-		if not is_instance_valid(
-			food
-		):
+		if not is_instance_valid(food):
 
-			foods.erase(
-				food
-			)
+			foods.erase(food)
 
 			continue
 
@@ -1017,34 +487,32 @@ func _check_food_collision() -> void:
 
 			score += value
 
-			game_coins += 5
+			if snake.has_method("grow"):
 
-			game_xp += 2
+				snake.grow(1)
 
-			if snake.has_method(
-				"grow"
-			):
-
-				snake.grow(
-					1
-				)
-
-			foods.erase(
-				food
-			)
+			foods.erase(food)
 
 			food.queue_free()
 
 			_spawn_food()
 
 
-# =========================================================
-# MAP COLLISION
-# =========================================================
+# ============================================================
+# Map collision
+# ============================================================
 
-func _check_map_collision() -> void:
+func _check_local_map_collision() -> void:
 
 	if snake == null:
+		return
+
+	if not snake.has_method(
+		"get_is_alive"
+	):
+		return
+
+	if not snake.get_is_alive():
 		return
 
 	var pos := snake.global_position
@@ -1056,276 +524,709 @@ func _check_map_collision() -> void:
 		or pos.y > MAP_SIZE.y - 30.0
 	):
 
-		_game_over()
+		if snake.has_method("die"):
 
-
-# =========================================================
-# NETWORK FOOD
-# =========================================================
-
-func network_food_spawned(
-	food_id: int,
-	position: Vector2,
-	value: int,
-	coins: int,
-	xp: int
-) -> void:
-
-	network_foods[
-		food_id
-	] = {
-		"position": position,
-		"value": value,
-		"coins": coins,
-		"xp": xp
-	}
-
-	_create_single_network_food(
-		food_id,
-		position
-	)
-
-
-# =========================================================
-# CREATE NETWORK FOOD VISUAL
-# =========================================================
-
-func _create_single_network_food(
-	food_id: int,
-	position: Vector2
-) -> void:
-
-	if network_food_nodes.has(
-		food_id
-	):
-
-		return
-
-	var food := Node2D.new()
-
-	food.position = position
-
-	add_child(
-		food
-	)
-
-	var script_resource := load(
-		"res://scripts/network_food_visual.gd"
-	)
-
-	if script_resource:
-
-		food.set_script(
-			script_resource
-		)
-
-	network_food_nodes[
-		food_id
-	] = food
-
-
-# =========================================================
-# NETWORK FOOD COLLECTED
-# =========================================================
-
-func network_food_collected(
-	food_id: int,
-	collector_id: int,
-	value: int,
-	coins: int,
-	xp: int
-) -> void:
-
-	network_foods.erase(
-		food_id
-	)
-
-	if network_food_nodes.has(
-		food_id
-	):
-
-		var node = network_food_nodes[
-			food_id
-		]
-
-		if is_instance_valid(
-			node
-		):
-
-			node.queue_free()
-
-	network_food_nodes.erase(
-		food_id
-	)
-
-	# Reward local player
-	if collector_id == multiplayer.get_unique_id():
-
-		score += value
-
-		game_coins += coins
-
-		game_xp += xp
-
-		if snake and snake.has_method(
-			"grow"
-		):
-
-			snake.grow(
-				1
+			snake.die(
+				"خرجت من حدود الخريطة"
 			)
 
 
-# =========================================================
-# NETWORK LOOT
-# =========================================================
+# ============================================================
+# Send local state
+# ============================================================
 
-func network_loot_spawned(
-	loot_id: int,
-	position: Vector2,
-	value: int,
-	coins: int,
-	xp: int
-) -> void:
+func _send_local_state() -> void:
 
-	network_loot[
-		loot_id
-	] = {
-		"position": position,
-		"value": value,
-		"coins": coins,
-		"xp": xp
-	}
-
-	_create_single_network_loot(
-		loot_id,
-		position
-	)
-
-
-# =========================================================
-# CREATE NETWORK LOOT VISUAL
-# =========================================================
-
-func _create_single_network_loot(
-	loot_id: int,
-	position: Vector2
-) -> void:
-
-	if network_loot_nodes.has(
-		loot_id
-	):
-
+	if snake == null:
 		return
 
-	var loot_node := Node2D.new()
-
-	loot_node.position = position
-
-	add_child(
-		loot_node
+	var network := get_node_or_null(
+		"/root/Network"
 	)
 
-	var script_resource := load(
-		"res://scripts/network_loot_visual.gd"
+	if network == null:
+		return
+
+	var direction := Vector2.RIGHT
+
+	if "direction" in snake:
+
+		direction = snake.direction
+
+	var length := 10
+
+	if snake.has_method(
+		"get_length"
+	):
+
+		length = snake.get_length()
+
+	var alive := true
+
+	if snake.has_method(
+		"get_is_alive"
+	):
+
+		alive = snake.get_is_alive()
+
+	network.broadcast_player_state(
+		snake.global_position,
+		direction,
+		length,
+		alive
 	)
 
-	if script_resource:
 
-		loot_node.set_script(
-			script_resource
+# ============================================================
+# Players synced
+# ============================================================
+
+func _on_players_synced(
+	players: Dictionary
+) -> void:
+
+	sync_network_players(
+		players
+	)
+
+
+func sync_network_players(
+	players: Dictionary
+) -> void:
+
+	var local_id := multiplayer.get_unique_id()
+
+	for peer_id in players.keys():
+
+		var id := int(peer_id)
+
+		var data: Dictionary = players[peer_id]
+
+		if id == local_id:
+
+			if snake != null:
+
+				if data.has("position"):
+
+					snake.global_position = data[
+						"position"
+					]
+
+			continue
+
+		_create_or_update_remote_snake(
+			id,
+			data
 		)
 
-	network_loot_nodes[
-		loot_id
-	] = loot_node
+	# إزالة اللاعبين الذين خرجوا
+	var active_ids := {}
 
+	for peer_id in players.keys():
 
-# =========================================================
-# NETWORK LOOT COLLECTED
-# =========================================================
+		active_ids[int(peer_id)] = true
 
-func network_loot_collected(
-	loot_id: int,
-	collector_id: int,
-	value: int,
-	coins: int,
-	xp: int
-) -> void:
+	for peer_id in remote_snakes.keys():
 
-	network_loot.erase(
-		loot_id
-	)
-
-	if network_loot_nodes.has(
-		loot_id
-	):
-
-		var node = network_loot_nodes[
-			loot_id
-		]
-
-		if is_instance_valid(
-			node
+		if not active_ids.has(
+			int(peer_id)
 		):
 
-			node.queue_free()
-
-	network_loot_nodes.erase(
-		loot_id
-	)
-
-	if collector_id == multiplayer.get_unique_id():
-
-		score += value
-
-		game_coins += coins
-
-		game_xp += xp
-
-		if snake and snake.has_method(
-			"grow"
-		):
-
-			snake.grow(
-				1
+			_remove_remote_snake(
+				int(peer_id)
 			)
 
+	_update_players_count()
 
-# =========================================================
-# NETWORK LOOT REMOVED
-# =========================================================
 
-func network_loot_removed(
-	loot_id: int
+# ============================================================
+# Player joined
+# ============================================================
+
+func _on_player_joined(
+	peer_id: int,
+	player_name: String
 ) -> void:
 
-	network_loot.erase(
-		loot_id
+	if peer_id == multiplayer.get_unique_id():
+		return
+
+	_show_notification(
+		"انضم اللاعب %s" % player_name
 	)
 
-	if network_loot_nodes.has(
-		loot_id
+
+# ============================================================
+# Player left
+# ============================================================
+
+func _on_player_left(
+	peer_id: int
+) -> void:
+
+	remote_player_left(
+		peer_id
+	)
+
+	_show_notification(
+		"غادر لاعب المباراة"
+	)
+
+
+func remote_player_left(
+	peer_id: int
+) -> void:
+
+	_remove_remote_snake(
+		peer_id
+	)
+
+	_update_players_count()
+
+
+# ============================================================
+# Create/update remote snake
+# ============================================================
+
+func _create_or_update_remote_snake(
+	peer_id: int,
+	data: Dictionary
+) -> void:
+
+	var player_name := str(
+		data.get(
+			"name",
+			"لاعب"
+		)
+	)
+
+	var position := data.get(
+		"position",
+		Vector2.ZERO
+	)
+
+	var direction := data.get(
+		"direction",
+		Vector2.RIGHT
+	)
+
+	var length := int(
+		data.get(
+			"length",
+			10
+		)
+	)
+
+	var alive := bool(
+		data.get(
+			"alive",
+			true
+		)
+	)
+
+	if not remote_snakes.has(peer_id):
+
+		_create_remote_snake(
+			peer_id,
+			player_name,
+			position
+		)
+
+	var remote = remote_snakes.get(
+		peer_id
+	)
+
+	if remote == null:
+		return
+
+	if remote.has_method(
+		"set_player_name"
 	):
 
-		var node = network_loot_nodes[
-			loot_id
-		]
+		remote.set_player_name(
+			player_name
+		)
 
-		if is_instance_valid(
-			node
-		):
+	if remote.has_method(
+		"update_state"
+	):
 
-			node.queue_free()
+		remote.update_state(
+			position,
+			direction,
+			length,
+			alive
+		)
 
-	network_loot_nodes.erase(
-		loot_id
+	_update_players_count()
+
+
+# ============================================================
+# Create remote snake
+# ============================================================
+
+func _create_remote_snake(
+	peer_id: int,
+	player_name: String,
+	start_position: Vector2
+) -> void:
+
+	if remote_snakes.has(peer_id):
+		return
+
+	var scene := load(
+		"res://scenes/snake.tscn"
+	)
+
+	if scene == null:
+		return
+
+	var remote = scene.instantiate()
+
+	remote.name = "RemoteSnake_%s" % peer_id
+
+	remote.position = start_position
+
+	add_child(remote)
+
+	if remote.has_method(
+		"setup"
+	):
+
+		remote.setup(
+			player_name
+		)
+
+	remote_snakes[peer_id] = remote
+
+
+# ============================================================
+# Remove remote snake
+# ============================================================
+
+func _remove_remote_snake(
+	peer_id: int
+) -> void:
+
+	if not remote_snakes.has(peer_id):
+		return
+
+	var remote = remote_snakes[peer_id]
+
+	if is_instance_valid(remote):
+
+		remote.queue_free()
+
+	remote_snakes.erase(
+		peer_id
 	)
 
 
-# =========================================================
+# ============================================================
+# Update remote player
+# ============================================================
+
+func update_remote_player(
+	peer_id: int,
+	new_position: Vector2,
+	new_direction: Vector2,
+	new_length: int,
+	alive: bool
+) -> void:
+
+	if peer_id == multiplayer.get_unique_id():
+		return
+
+	if not remote_snakes.has(peer_id):
+
+		_create_remote_snake(
+			peer_id,
+			"لاعب",
+			new_position
+		)
+
+	var remote = remote_snakes.get(
+		peer_id
+	)
+
+	if remote == null:
+		return
+
+	if remote.has_method(
+		"update_state"
+	):
+
+		remote.update_state(
+			new_position,
+			new_direction,
+			new_length,
+			alive
+		)
+
+	else:
+
+		remote.global_position = new_position
+
+
+# ============================================================
+# Local spawn
+# ============================================================
+
+func set_local_spawn(
+	spawn_position: Vector2
+) -> void:
+
+	if snake == null:
+		return
+
+	snake.global_position = spawn_position
+
+
+# ============================================================
+# Player died
+# ============================================================
+
+func _on_player_died(
+	victim_id: int,
+	killer_id: int,
+	death_position: Vector2,
+	reward: Dictionary
+) -> void:
+
+	var local_id := multiplayer.get_unique_id()
+
+	if victim_id == local_id:
+
+		deaths += 1
+
+		game_over = true
+
+		can_respawn = true
+
+		respawn_timer = 0.0
+
+		last_killer_id = killer_id
+
+		if snake != null:
+
+			if snake.has_method(
+				"die"
+			):
+
+				snake.die(
+					"تم القضاء عليك"
+				)
+
+		_show_death_screen(
+			killer_id
+		)
+
+	else:
+
+		if killer_id == local_id:
+
+			kills += 1
+
+			var coins := int(
+				reward.get(
+					"coins",
+					0
+				)
+			)
+
+			var xp := int(
+				reward.get(
+					"xp",
+					0
+				)
+			)
+
+			if coins > 0:
+
+				_show_notification(
+					"🔥 قضيت على لاعب! +%d عملة" % coins
+				)
+
+			else:
+
+				_show_notification(
+					"🔥 قضيت على لاعب!"
+				)
+
+		else:
+
+			_show_notification(
+				"💥 تم القضاء على لاعب"
+			)
+
+	if remote_snakes.has(victim_id):
+
+		var remote = remote_snakes[victim_id]
+
+		if is_instance_valid(remote):
+
+			if remote.has_method(
+				"die"
+			):
+
+				remote.die()
+
+
+	_update_ui()
+
+
+# ============================================================
+# Respawn
+# ============================================================
+
+func _on_player_respawned(
+	peer_id: int,
+	spawn_position: Vector2
+) -> void:
+
+	var local_id := multiplayer.get_unique_id()
+
+	if peer_id == local_id:
+
+		game_over = false
+
+		can_respawn = false
+
+		respawn_timer = 0.0
+
+		if snake != null:
+
+			snake.global_position = spawn_position
+
+			if snake.has_method(
+				"revive"
+			):
+
+				snake.revive()
+
+			if snake.has_method(
+				"reset_body"
+			):
+
+				snake.reset_body()
+
+			if snake.has_method(
+				"resume_movement"
+			):
+
+				snake.resume_movement()
+
+		_remove_game_over_panel()
+
+		_show_notification(
+			"🛡️ عدت إلى اللعبة — حماية لمدة 3 ثوانٍ"
+		)
+
+	else:
+
+		if remote_snakes.has(peer_id):
+
+			var remote = remote_snakes[peer_id]
+
+			if is_instance_valid(remote):
+
+				if remote.has_method(
+					"respawn"
+				):
+
+					remote.respawn(
+						spawn_position
+					)
+
+				else:
+
+					remote.global_position = spawn_position
+
+
+# ============================================================
+# Request respawn
+# ============================================================
+
+func _request_respawn() -> void:
+
+	var network := get_node_or_null(
+		"/root/Network"
+	)
+
+	if network == null:
+		return
+
+	network.request_respawn()
+
+
+# ============================================================
+# Death screen
+# ============================================================
+
+func _show_death_screen(
+	killer_id: int
+) -> void:
+
+	_remove_game_over_panel()
+
+	var canvas := get_node_or_null(
+		"GameUI"
+	)
+
+	if canvas == null:
+		return
+
+	game_over_panel = Panel.new()
+
+	game_over_panel.position = Vector2(
+		390,
+		175
+	)
+
+	game_over_panel.size = Vector2(
+		500,
+		370
+	)
+
+	canvas.add_child(
+		game_over_panel
+	)
+
+	var title := Label.new()
+
+	title.position = Vector2(
+		30,
+		25
+	)
+
+	title.size = Vector2(
+		440,
+		60
+	)
+
+	title.text = "💀 انتهت حياتك"
+
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+	title.add_theme_font_size_override(
+		"font_size",
+		40
+	)
+
+	game_over_panel.add_child(
+		title
+	)
+
+	var killer_label := Label.new()
+
+	killer_label.position = Vector2(
+		30,
+		90
+	)
+
+	killer_label.size = Vector2(
+		440,
+		50
+	)
+
+	if killer_id > 0:
+
+		killer_label.text = (
+			"القضاء عليك بواسطة لاعب #%d"
+			% killer_id
+		)
+
+	else:
+
+		killer_label.text = "انتهت المواجهة بالتعادل"
+
+	killer_label.horizontal_alignment = (
+		HORIZONTAL_ALIGNMENT_CENTER
+	)
+
+	killer_label.add_theme_font_size_override(
+		"font_size",
+		20
+	)
+
+	game_over_panel.add_child(
+		killer_label
+	)
+
+	var stats := Label.new()
+
+	stats.position = Vector2(
+		30,
+		145
+	)
+
+	stats.size = Vector2(
+		440,
+		80
+	)
+
+	stats.text = (
+		"القتلات: %d\n"
+		+ "الوفيات: %d"
+	) % [
+		kills,
+		deaths
+	]
+
+	stats.horizontal_alignment = (
+		HORIZONTAL_ALIGNMENT_CENTER
+	)
+
+	stats.add_theme_font_size_override(
+		"font_size",
+		22
+	)
+
+	game_over_panel.add_child(
+		stats
+	)
+
+	var respawn := Button.new()
+
+	respawn.position = Vector2(
+		70,
+		255
+	)
+
+	respawn.size = Vector2(
+		360,
+		60
+	)
+
+	respawn.text = "إعادة الظهور"
+
+	respawn.pressed.connect(
+		_request_respawn
+	)
+
+	game_over_panel.add_child(
+		respawn
+	)
+
+
+# ============================================================
+# Remove game over panel
+# ============================================================
+
+func _remove_game_over_panel() -> void:
+
+	if is_instance_valid(
+		game_over_panel
+	):
+
+		game_over_panel.queue_free()
+
+	game_over_panel = null
+
+
+# ============================================================
 # UI
-# =========================================================
+# ============================================================
 
 func _create_ui() -> void:
 
@@ -1333,9 +1234,7 @@ func _create_ui() -> void:
 
 	canvas.name = "GameUI"
 
-	add_child(
-		canvas
-	)
+	add_child(canvas)
 
 	var top_bar := Panel.new()
 
@@ -1346,7 +1245,7 @@ func _create_ui() -> void:
 
 	top_bar.size = Vector2(
 		390,
-		170
+		175
 	)
 
 	canvas.add_child(
@@ -1362,12 +1261,12 @@ func _create_ui() -> void:
 
 	score_label.size = Vector2(
 		350,
-		35
+		32
 	)
 
 	score_label.add_theme_font_size_override(
 		"font_size",
-		26
+		24
 	)
 
 	top_bar.add_child(
@@ -1378,12 +1277,12 @@ func _create_ui() -> void:
 
 	length_label.position = Vector2(
 		20,
-		52
+		50
 	)
 
 	length_label.size = Vector2(
 		350,
-		35
+		32
 	)
 
 	length_label.add_theme_font_size_override(
@@ -1395,49 +1294,48 @@ func _create_ui() -> void:
 		length_label
 	)
 
-	coins_label = Label.new()
+	kills_label = Label.new()
 
-	coins_label.position = Vector2(
+	kills_label.position = Vector2(
 		20,
-		90
+		87
 	)
 
-	coins_label.size = Vector2(
+	kills_label.size = Vector2(
 		350,
-		30
+		32
 	)
 
-	coins_label.add_theme_font_size_override(
+	kills_label.add_theme_font_size_override(
 		"font_size",
-		19
+		20
 	)
 
 	top_bar.add_child(
-		coins_label
+		kills_label
 	)
 
 	players_label = Label.new()
 
 	players_label.position = Vector2(
 		20,
-		125
+		124
 	)
 
 	players_label.size = Vector2(
 		350,
-		30
+		32
 	)
 
 	players_label.add_theme_font_size_override(
 		"font_size",
-		18
+		19
 	)
 
 	top_bar.add_child(
 		players_label
 	)
 
-	# Pause
 	pause_button = Button.new()
 
 	pause_button.position = Vector2(
@@ -1460,7 +1358,6 @@ func _create_ui() -> void:
 		pause_button
 	)
 
-	# Exit
 	var exit_button := Button.new()
 
 	exit_button.position = Vector2(
@@ -1483,18 +1380,45 @@ func _create_ui() -> void:
 		exit_button
 	)
 
+	notification_label = Label.new()
 
-# =========================================================
-# UPDATE UI
-# =========================================================
+	notification_label.position = Vector2(
+		390,
+		35
+	)
+
+	notification_label.size = Vector2(
+		500,
+		50
+	)
+
+	notification_label.horizontal_alignment = (
+		HORIZONTAL_ALIGNMENT_CENTER
+	)
+
+	notification_label.add_theme_font_size_override(
+		"font_size",
+		22
+	)
+
+	notification_label.visible = false
+
+	canvas.add_child(
+		notification_label
+	)
+
+
+# ============================================================
+# UI update
+# ============================================================
 
 func _update_ui() -> void:
 
 	if score_label:
 
 		score_label.text = (
-			"النقاط: %d" %
-			score
+			"النقاط: %d"
+			% score
 		)
 
 	if length_label and snake:
@@ -1508,38 +1432,51 @@ func _update_ui() -> void:
 			length = snake.get_length()
 
 		length_label.text = (
-			"الطول: %d" %
-			length
+			"الطول: %d"
+			% length
 		)
 
-	if coins_label:
+	if kills_label:
 
-		coins_label.text = (
-			"💰 العملات: %d" %
-			game_coins
+		kills_label.text = (
+			"🔥 القتلات: %d   💀 الوفيات: %d"
+			% [
+				kills,
+				deaths
+			]
 		)
 
-	if players_label:
-
-		var network := get_node_or_null(
-			"/root/Network"
-		)
-
-		var count := 1
-
-		if network:
-
-			count = network.get_player_count()
-
-		players_label.text = (
-			"👥 اللاعبون: %d" %
-			count
-		)
+	_update_players_count()
 
 
-# =========================================================
-# PAUSE
-# =========================================================
+# ============================================================
+# Players count
+# ============================================================
+
+func _update_players_count() -> void:
+
+	if players_label == null:
+		return
+
+	var count := 1
+
+	var network := get_node_or_null(
+		"/root/Network"
+	)
+
+	if network != null:
+
+		count = network.get_player_count()
+
+	players_label.text = (
+		"👥 اللاعبون: %d"
+		% count
+	)
+
+
+# ============================================================
+# Pause
+# ============================================================
 
 func _toggle_pause() -> void:
 
@@ -1554,171 +1491,364 @@ func _toggle_pause() -> void:
 			"إيقاف"
 		)
 
+	if snake != null:
 
-# =========================================================
-# GAME OVER
-# =========================================================
+		if paused:
 
-func _game_over() -> void:
+			if snake.has_method(
+				"stop_movement"
+			):
 
-	if game_over:
+				snake.stop_movement()
+
+		else:
+
+			if snake.has_method(
+				"resume_movement"
+			):
+
+				snake.resume_movement()
+
+
+# ============================================================
+# Notification
+# ============================================================
+
+func _show_notification(
+	message: String
+) -> void:
+
+	if notification_label == null:
 		return
 
-	game_over = true
+	notification_label.text = message
 
-	if snake:
+	notification_label.visible = true
 
-		if snake.has_method(
-			"die"
-		):
+	var timer := get_tree().create_timer(
+		2.5
+	)
 
-			snake.die(
-				"اصطدمت بحدود الخريطة"
+	timer.timeout.connect(
+		func():
+			if is_instance_valid(
+				notification_label
+			):
+
+				notification_label.visible = false
+	)
+
+
+# ============================================================
+# Network food
+# ============================================================
+
+func sync_network_food(
+	food_data: Dictionary
+) -> void:
+
+	network_foods = food_data
+
+	_refresh_network_food_visuals()
+
+
+func _refresh_network_food_visuals() -> void:
+
+	for id in network_food_nodes.keys():
+
+		if not network_foods.has(id):
+
+			var node = network_food_nodes[id]
+
+			if is_instance_valid(node):
+
+				node.queue_free()
+
+			network_food_nodes.erase(id)
+
+	for id in network_foods.keys():
+
+		if not network_food_nodes.has(id):
+
+			var data: Dictionary = network_foods[id]
+
+			_create_single_network_food(
+				int(id),
+				data.get(
+					"position",
+					Vector2.ZERO
+				),
+				int(data.get(
+					"value",
+					10
+				))
 			)
 
-	_show_game_over()
 
+func network_food_spawned(
+	food_id: int,
+	food_position: Vector2,
+	value: int
+) -> void:
 
-# =========================================================
-# GAME OVER PANEL
-# =========================================================
+	network_foods[food_id] = {
+		"position": food_position,
+		"value": value
+	}
 
-func _show_game_over() -> void:
-
-	var canvas := get_node_or_null(
-		"GameUI"
-	)
-
-	if canvas == null:
-		return
-
-	if game_over_panel:
-
-		return
-
-	game_over_panel = Panel.new()
-
-	game_over_panel.position = Vector2(
-		390,
-		180
-	)
-
-	game_over_panel.size = Vector2(
-		500,
-		340
-	)
-
-	canvas.add_child(
-		game_over_panel
-	)
-
-	var title := Label.new()
-
-	title.position = Vector2(
-		30,
-		25
-	)
-
-	title.size = Vector2(
-		440,
-		60
-	)
-
-	title.text = "انتهت اللعبة"
-
-	title.horizontal_alignment = (
-		HORIZONTAL_ALIGNMENT_CENTER
-	)
-
-	title.add_theme_font_size_override(
-		"font_size",
-		40
-	)
-
-	game_over_panel.add_child(
-		title
-	)
-
-	var result := Label.new()
-
-	result.position = Vector2(
-		30,
-		100
-	)
-
-	result.size = Vector2(
-		440,
-		90
-	)
-
-	result.text = (
-		"النقاط: %d\nالعملات: %d" %
-		[
-			score,
-			game_coins
-		]
-	)
-
-	result.horizontal_alignment = (
-		HORIZONTAL_ALIGNMENT_CENTER
-	)
-
-	result.add_theme_font_size_override(
-		"font_size",
-		25
-	)
-
-	game_over_panel.add_child(
-		result
-	)
-
-	var restart := Button.new()
-
-	restart.position = Vector2(
-		80,
-		210
-	)
-
-	restart.size = Vector2(
-		340,
-		55
-	)
-
-	restart.text = "العب مرة أخرى"
-
-	restart.pressed.connect(
-		_restart_game
-	)
-
-	game_over_panel.add_child(
-		restart
+	_create_single_network_food(
+		food_id,
+		food_position,
+		value
 	)
 
 
-# =========================================================
-# RESTART
-# =========================================================
+func _on_food_spawned(
+	food_id: int,
+	food_position: Vector2,
+	value: int
+) -> void:
 
-func _restart_game() -> void:
-
-	var network := get_node_or_null(
-		"/root/Network"
+	network_food_spawned(
+		food_id,
+		food_position,
+		value
 	)
 
-	if network and network.has_method(
-		"request_respawn"
+
+func _create_single_network_food(
+	food_id: int,
+	food_position: Vector2,
+	value: int
+) -> void:
+
+	if network_food_nodes.has(
+		food_id
 	):
 
-		network.request_respawn()
+		return
 
-	else:
+	var node := Node2D.new()
 
-		get_tree().reload_current_scene()
+	node.name = (
+		"NetworkFood_%d"
+		% food_id
+	)
+
+	node.position = food_position
+
+	add_child(node)
+
+	var visual := NetworkFoodVisual.new()
+
+	visual.radius = FOOD_RADIUS
+
+	node.add_child(
+		visual
+	)
+
+	network_food_nodes[food_id] = node
 
 
-# =========================================================
-# BACK TO LOBBY
-# =========================================================
+func network_food_collected(
+	food_id: int,
+	collector_id: int
+) -> void:
+
+	network_foods.erase(
+		food_id
+	)
+
+	if network_food_nodes.has(
+		food_id
+	):
+
+		var node = network_food_nodes[
+			food_id
+		]
+
+		if is_instance_valid(node):
+
+			node.queue_free()
+
+		network_food_nodes.erase(
+			food_id
+		)
+
+
+func _on_food_collected(
+	food_id: int,
+	collector_id: int
+) -> void:
+
+	network_food_collected(
+		food_id,
+		collector_id
+	)
+
+
+# ============================================================
+# Network loot
+# ============================================================
+
+func sync_network_loot(
+	loot_data: Dictionary
+) -> void:
+
+	network_loot = loot_data
+
+	_refresh_network_loot_visuals()
+
+
+func _refresh_network_loot_visuals() -> void:
+
+	for id in network_loot_nodes.keys():
+
+		if not network_loot.has(id):
+
+			var node = network_loot_nodes[id]
+
+			if is_instance_valid(node):
+
+				node.queue_free()
+
+			network_loot_nodes.erase(id)
+
+	for id in network_loot.keys():
+
+		if not network_loot_nodes.has(id):
+
+			var data: Dictionary = network_loot[id]
+
+			_create_single_network_loot(
+				int(id),
+				data.get(
+					"position",
+					Vector2.ZERO
+				),
+				int(data.get(
+					"value",
+					10
+				)),
+				int(data.get(
+					"xp",
+					5
+				))
+			)
+
+
+func network_loot_spawned(
+	loot_id: int,
+	loot_position: Vector2,
+	value: int,
+	xp: int
+) -> void:
+
+	network_loot[loot_id] = {
+		"position": loot_position,
+		"value": value,
+		"xp": xp
+	}
+
+	_create_single_network_loot(
+		loot_id,
+		loot_position,
+		value,
+		xp
+	)
+
+
+func _on_loot_spawned(
+	loot_id: int,
+	loot_position: Vector2,
+	value: int,
+	xp: int
+) -> void:
+
+	network_loot_spawned(
+		loot_id,
+		loot_position,
+		value,
+		xp
+	)
+
+
+func _create_single_network_loot(
+	loot_id: int,
+	loot_position: Vector2,
+	value: int,
+	xp: int
+) -> void:
+
+	if network_loot_nodes.has(
+		loot_id
+	):
+
+		return
+
+	var node := Node2D.new()
+
+	node.name = (
+		"NetworkLoot_%d"
+		% loot_id
+	)
+
+	node.position = loot_position
+
+	add_child(node)
+
+	var visual := NetworkLootVisual.new()
+
+	visual.value = value
+	visual.xp = xp
+
+	node.add_child(
+		visual
+	)
+
+	network_loot_nodes[loot_id] = node
+
+
+func network_loot_collected(
+	loot_id: int,
+	collector_id: int
+) -> void:
+
+	network_loot.erase(
+		loot_id
+	)
+
+	if network_loot_nodes.has(
+		loot_id
+	):
+
+		var node = network_loot_nodes[
+			loot_id
+		]
+
+		if is_instance_valid(node):
+
+			node.queue_free()
+
+		network_loot_nodes.erase(
+			loot_id
+		)
+
+
+func _on_loot_collected(
+	loot_id: int,
+	collector_id: int
+) -> void:
+
+	network_loot_collected(
+		loot_id,
+		collector_id
+	)
+
+
+# ============================================================
+# Exit
+# ============================================================
 
 func _back_to_lobby() -> void:
 
@@ -1735,69 +1865,9 @@ func _back_to_lobby() -> void:
 	)
 
 
-# =========================================================
-# NETWORK PLAYER JOINED
-# =========================================================
-
-func _on_network_player_joined(
-	peer_id: int,
-	new_name: String
-) -> void:
-
-	# Handled through network_player_joined
-	pass
-
-
-# =========================================================
-# NETWORK PLAYER LEFT
-# =========================================================
-
-func _on_network_player_left(
-	peer_id: int
-) -> void:
-
-	remote_player_left(
-		peer_id
-	)
-
-
-# =========================================================
-# NETWORK PLAYER DIED
-# =========================================================
-
-func _on_network_player_died(
-	peer_id: int,
-	killer_id: int,
-	death_position: Vector2,
-	reward: int
-) -> void:
-
-	network_player_died(
-		peer_id,
-		killer_id,
-		death_position,
-		reward
-	)
-
-
-# =========================================================
-# NETWORK PLAYER RESPAWN
-# =========================================================
-
-func _on_network_player_respawned(
-	peer_id: int,
-	spawn_position: Vector2
-) -> void:
-
-	network_player_respawned(
-		peer_id,
-		spawn_position
-	)
-
-
-# =========================================================
-# FOOD VISUAL
-# =========================================================
+# ============================================================
+# Food visual
+# ============================================================
 
 class FoodVisual extends Node2D:
 
@@ -1811,28 +1881,16 @@ class FoodVisual extends Node2D:
 
 		queue_redraw()
 
-
 	func _draw() -> void:
 
-		var scale_value := (
-			1.0 +
-			sin(pulse) * 0.08
+		var scale_factor := (
+			1.0
+			+ sin(pulse) * 0.08
 		)
 
 		draw_circle(
 			Vector2.ZERO,
-			radius * scale_value + 3.0,
-			Color(
-				0.0,
-				0.0,
-				0.0,
-				0.18
-			)
-		)
-
-		draw_circle(
-			Vector2.ZERO,
-			radius * scale_value,
+			radius * scale_factor,
 			Color("#FACC15")
 		)
 
@@ -1842,5 +1900,93 @@ class FoodVisual extends Node2D:
 				-3
 			),
 			radius * 0.3,
+			Color.WHITE
+		)
+
+
+# ============================================================
+# Network food visual
+# ============================================================
+
+class NetworkFoodVisual extends Node2D:
+
+	var radius := 9.0
+
+	var pulse := 0.0
+
+	func _process(delta: float) -> void:
+
+		pulse += delta * 5.0
+
+		queue_redraw()
+
+	func _draw() -> void:
+
+		var scale_factor := (
+			1.0
+			+ sin(pulse) * 0.1
+		)
+
+		draw_circle(
+			Vector2.ZERO,
+			radius * scale_factor,
+			Color("#FACC15")
+		)
+
+		draw_circle(
+			Vector2(
+				-3,
+				-3
+			),
+			radius * 0.3,
+			Color.WHITE
+		)
+
+
+# ============================================================
+# Network loot visual
+# ============================================================
+
+class NetworkLootVisual extends Node2D:
+
+	var value := 10
+	var xp := 5
+
+	var time := 0.0
+
+	func _process(delta: float) -> void:
+
+		time += delta
+
+		position.y = sin(
+			time * 4.0
+		) * 4.0
+
+		rotation = sin(
+			time * 2.0
+		) * 0.08
+
+		queue_redraw()
+
+	func _draw() -> void:
+
+		draw_circle(
+			Vector2.ZERO,
+			15.0,
+			Color("#F59E0B")
+		)
+
+		draw_circle(
+			Vector2.ZERO,
+			11.0,
+			Color("#FACC15")
+		)
+
+		draw_circle(
+			Vector2(
+				-4,
+				-4
+			),
+			3.0,
 			Color.WHITE
 		)
