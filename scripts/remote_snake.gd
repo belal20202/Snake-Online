@@ -3,7 +3,7 @@ extends Node2D
 # =========================================================
 # SNAKE ARAB ONLINE
 # REMOTE SNAKE
-# STEP 6.6.2
+# STEP 6.6.5
 # =========================================================
 
 var peer_id: int = 0
@@ -47,7 +47,6 @@ func setup(
 ) -> void:
 
 	peer_id = id
-
 	player_name = name
 
 	current_position = start_position
@@ -58,8 +57,9 @@ func setup(
 	current_length = 10
 	target_length = 10
 
-	_create_name_label()
+	is_alive = true
 
+	_create_name_label()
 	_rebuild_body()
 
 	queue_redraw()
@@ -85,7 +85,6 @@ func _process(delta: float) -> void:
 	if not is_alive:
 		return
 
-	# Smooth position interpolation
 	global_position = global_position.lerp(
 		target_position,
 		min(
@@ -94,7 +93,6 @@ func _process(delta: float) -> void:
 		)
 	)
 
-	# Smooth direction
 	direction = direction.lerp(
 		target_direction,
 		min(
@@ -106,7 +104,38 @@ func _process(delta: float) -> void:
 	if direction.length() > 0.01:
 		direction = direction.normalized()
 
+	current_position = global_position
+
+	current_length = int(
+		lerp(
+			float(current_length),
+			float(target_length),
+			min(1.0, 8.0 * delta)
+		)
+	)
+
 	_rebuild_body()
+
+	queue_redraw()
+
+
+# =========================================================
+# SET TARGET POSITION
+# =========================================================
+# هذه الدالة تستخدم عند دخول لاعب جديد
+# أو عند إعطاء اللاعب Spawn من السيرفر.
+
+func set_target_position(
+	new_position: Vector2
+) -> void:
+
+	target_position = new_position
+	current_position = new_position
+
+	global_position = new_position
+
+	if body.is_empty():
+		_rebuild_body()
 
 	queue_redraw()
 
@@ -156,7 +185,12 @@ func _create_name_label() -> void:
 
 	name_label.add_theme_color_override(
 		"font_shadow_color",
-		Color(0, 0, 0, 0.8)
+		Color(
+			0,
+			0,
+			0,
+			0.8
+		)
 	)
 
 	name_label.add_theme_constant_override(
@@ -416,13 +450,21 @@ func _draw() -> void:
 	draw_circle(
 		eye_left + forward * 2.0,
 		2.5,
-		Color(0.02, 0.02, 0.02)
+		Color(
+			0.02,
+			0.02,
+			0.02
+		)
 	)
 
 	draw_circle(
 		eye_right + forward * 2.0,
 		2.5,
-		Color(0.02, 0.02, 0.02)
+		Color(
+			0.02,
+			0.02,
+			0.02
+		)
 	)
 
 
@@ -446,12 +488,17 @@ func respawn(
 ) -> void:
 
 	is_alive = true
-
 	visible = true
 
 	global_position = new_position
-
+	current_position = new_position
 	target_position = new_position
+
+	direction = Vector2.RIGHT
+	target_direction = Vector2.RIGHT
+
+	current_length = 10
+	target_length = 10
 
 	body.clear()
 
